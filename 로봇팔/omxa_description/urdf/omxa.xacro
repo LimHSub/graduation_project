@@ -1,0 +1,519 @@
+<?xml version="1.0" ?>
+<robot name="omxa" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find omxa_description)/urdf/materials.xacro" />
+<xacro:include filename="$(find omxa_description)/urdf/omxa.trans" />
+<xacro:include filename="$(find omxa_description)/urdf/omxa.gazebo" />
+<link name="base_link">
+  <inertial>
+    <origin xyz="0.0011452354851243316 0.09257922396155326 -0.009546902704709322" rpy="0 0 0"/>
+    <mass value="8.144455453724765"/>
+    <inertia ixx="0.021161" iyy="0.021509" izz="0.038923" ixy="-2.1e-05" iyz="-0.000101" ixz="-8.3e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="J1_1">
+  <inertial>
+    <origin xyz="-1.9633230930646508e-13 -0.015028162831385208 -0.02131843142453122" rpy="0 0 0"/>
+    <mass value="0.6640277986417521"/>
+    <inertia ixx="0.000301" iyy="0.000169" izz="0.000249" ixy="0.0" iyz="-1e-06" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.0 -0.090078 -0.01438" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.0 -0.090078 -0.01438" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk1_1">
+  <inertial>
+    <origin xyz="1.936679983050027e-15 4.225777640309847e-07 0.0075757529306429705" rpy="0 0 0"/>
+    <mass value="1.495487199833467"/>
+    <inertia ixx="0.001602" iyy="0.001644" izz="0.003068" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.0 -0.090078 -0.01688" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.0 -0.090078 -0.01688" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="J2_1">
+  <inertial>
+    <origin xyz="-0.0073666147801041805 0.0167283862690214 0.022971314919524508" rpy="0 0 0"/>
+    <mass value="0.6640277986417521"/>
+    <inertia ixx="0.000249" iyy="0.000301" izz="0.000169" ixy="-0.0" iyz="-0.0" ixz="-1e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.008049 -0.073102 -0.03103" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.008049 -0.073102 -0.03103" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk2_1">
+  <inertial>
+    <origin xyz="-0.024144418973271072 -6.90027333683646e-05 0.05506220993115714" rpy="0 0 0"/>
+    <mass value="0.44910078476074017"/>
+    <inertia ixx="0.000561" iyy="0.000656" izz="0.000169" ixy="-0.0" iyz="0.0" ixz="8e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.024501 -0.089899 -0.06903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.024501 -0.089899 -0.06903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="link240_1">
+  <inertial>
+    <origin xyz="-2.8020146134022284e-07 4.2361398389090255e-07 0.11999990032867379" rpy="0 0 0"/>
+    <mass value="0.7535999999999999"/>
+    <inertia ixx="0.003642" iyy="0.003642" izz="5e-05" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-1e-06 -0.089828 -0.10303" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/link240_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-1e-06 -0.089828 -0.10303" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/link240_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk3_1">
+  <inertial>
+    <origin xyz="3.755533271349994e-06 -0.0013985391773569666 -0.013927518759503155" rpy="0 0 0"/>
+    <mass value="0.5086194556251544"/>
+    <inertia ixx="0.000816" iyy="0.000816" izz="0.000186" ixy="0.0" iyz="5.1e-05" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-1e-06 -0.089828 -0.34303" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk3_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-1e-06 -0.089828 -0.34303" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk3_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="J3_1">
+  <inertial>
+    <origin xyz="-0.02139460082710719 0.02640959841858495 0.013499900328870218" rpy="0 0 0"/>
+    <mass value="0.6640277986417521"/>
+    <inertia ixx="0.000249" iyy="0.000169" izz="0.000301" ixy="-1e-06" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.022331 -0.079393 -0.35503" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J3_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.022331 -0.079393 -0.35503" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J3_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk4_1">
+  <inertial>
+    <origin xyz="-0.024291681062063773 0.056225837594128816 -6.704464566853474e-07" rpy="0 0 0"/>
+    <mass value="0.43200889430043676"/>
+    <inertia ixx="0.000542" iyy="0.000161" izz="0.000631" ixy="9e-06" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.024711 -0.1209 -0.36853" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk4_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.024711 -0.1209 -0.36853" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk4_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="link160_1">
+  <inertial>
+    <origin xyz="-0.00023076459739294208 0.07999968636345664 -9.967132363897235e-08" rpy="0 0 0"/>
+    <mass value="0.5024"/>
+    <inertia ixx="0.001089" iyy="3.4e-05" izz="0.001089" ixy="3e-06" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.000114 -0.154829 -0.36853" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/link160_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.000114 -0.154829 -0.36853" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/link160_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk5_1">
+  <inertial>
+    <origin xyz="0.00015735758047681736 0.0076497148715573005 -0.0073365423310065014" rpy="0 0 0"/>
+    <mass value="0.6812840660137512"/>
+    <inertia ixx="0.000581" iyy="0.000361" izz="0.000482" ixy="2e-06" iyz="5.7e-05" ixz="2e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.000347 -0.314828 -0.36853" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk5_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.000347 -0.314828 -0.36853" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk5_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="J4_1">
+  <inertial>
+    <origin xyz="4.746945249718156e-05 -0.016606653380620617 0.0003833811683018884" rpy="0 0 0"/>
+    <mass value="0.34460384683878587"/>
+    <inertia ixx="9.5e-05" iyy="8.3e-05" izz="5.6e-05" ixy="0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.000472 -0.358328 -0.35703" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J4_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.000472 -0.358328 -0.35703" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J4_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk6_1">
+  <inertial>
+    <origin xyz="-8.13094238404533e-06 0.00278825370341923 -9.96713211964817e-08" rpy="0 0 0"/>
+    <mass value="0.016309929358964557"/>
+    <inertia ixx="1e-06" iyy="4e-06" izz="3e-06" ixy="-0.0" iyz="0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.000478 -0.360328 -0.36903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk6_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.000478 -0.360328 -0.36903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk6_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="J5_1">
+  <inertial>
+    <origin xyz="-0.016131516036043035 0.020261447016861223 -0.011000099671324481" rpy="0 0 0"/>
+    <mass value="0.3332451576100366"/>
+    <inertia ixx="8.1e-05" iyy="5.3e-05" izz="9.3e-05" ixy="-1e-06" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.016497 -0.368877 -0.38003" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J5_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.016497 -0.368877 -0.38003" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/J5_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk7_1">
+  <inertial>
+    <origin xyz="-0.019058370959932864 0.02031871633619342 -9.967125758070239e-08" rpy="0 0 0"/>
+    <mass value="0.03437095087140986"/>
+    <inertia ixx="4e-06" iyy="1.1e-05" izz="1.2e-05" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.018405 -0.400883 -0.36903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk7_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.018405 -0.400883 -0.36903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk7_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk8_1">
+  <inertial>
+    <origin xyz="1.4316948635835361e-06 -0.00041671610960125616 -0.0006040226246480374" rpy="0 0 0"/>
+    <mass value="0.0266624513680774"/>
+    <inertia ixx="5e-06" iyy="1e-05" izz="6e-06" ixy="-0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.000677 -0.429328 -0.36903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk8_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.000677 -0.429328 -0.36903" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk8_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="gripper_1">
+  <inertial>
+    <origin xyz="-0.00013872017241288654 0.03485484544147888 0.021350730954225017" rpy="0 0 0"/>
+    <mass value="1.708566448261926"/>
+    <inertia ixx="0.002727" iyy="0.002064" izz="0.002268" ixy="1e-06" iyz="0.000721" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.000681 -0.430828 -0.35703" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/gripper_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.000681 -0.430828 -0.35703" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/gripper_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk9_1">
+  <inertial>
+    <origin xyz="1.4496764616576778e-07 1.183290801010095e-06 -9.967372094354943e-08" rpy="0 0 0"/>
+    <mass value="6.165375582670236e-11"/>
+    <inertia ixx="0.0" iyy="0.0" izz="0.0" ixy="-0.0" iyz="-0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.001111 -0.562727 -0.35703" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk9_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.001111 -0.562727 -0.35703" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://omxa_description/meshes/brk9_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="Rigid1" type="fixed">
+  <origin xyz="0.0 0.090078 0.01438" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="J1_1"/>
+</joint>
+
+<joint name="Revolute1" type="revolute">
+  <origin xyz="0.0 0.0 0.0025" rpy="0 0 0"/>
+  <parent link="J1_1"/>
+  <child link="brk1_1"/>
+  <axis xyz="0.0 0.0 1.0"/>
+  <limit upper="3.141593" lower="-3.141593" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid2" type="fixed">
+  <origin xyz="0.008049 -0.016976 0.01415" rpy="0 0 0"/>
+  <parent link="brk1_1"/>
+  <child link="J2_1"/>
+</joint>
+
+<joint name="Revolute2" type="revolute">
+  <origin xyz="0.016452 0.016797 0.038" rpy="0 0 0"/>
+  <parent link="J2_1"/>
+  <child link="brk2_1"/>
+  <axis xyz="0.999996 0.002879 -0.0"/>
+  <limit upper="1.832596" lower="-1.832596" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid3" type="fixed">
+  <origin xyz="-0.0245 -7.1e-05 0.034" rpy="0 0 0"/>
+  <parent link="brk2_1"/>
+  <child link="link240_1"/>
+</joint>
+
+<joint name="Rigid4" type="fixed">
+  <origin xyz="0.0 0.0 0.24" rpy="0 0 0"/>
+  <parent link="link240_1"/>
+  <child link="brk3_1"/>
+</joint>
+
+<joint name="Rigid5" type="fixed">
+  <origin xyz="0.02233 -0.010435 0.012" rpy="0 0 0"/>
+  <parent link="brk3_1"/>
+  <child link="J3_1"/>
+</joint>
+
+<joint name="Revolute3" type="revolute">
+  <origin xyz="0.00238 0.041507 0.0135" rpy="0 0 0"/>
+  <parent link="J3_1"/>
+  <child link="brk4_1"/>
+  <axis xyz="0.999996 0.002879 0.0"/>
+  <limit upper="1.989675" lower="-1.48353" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid6" type="fixed">
+  <origin xyz="-0.024597 0.033929 0.0" rpy="0 0 0"/>
+  <parent link="brk4_1"/>
+  <child link="link160_1"/>
+</joint>
+
+<joint name="Rigid7" type="fixed">
+  <origin xyz="-0.000461 0.159999 0.0" rpy="0 0 0"/>
+  <parent link="link160_1"/>
+  <child link="brk5_1"/>
+</joint>
+
+<joint name="Rigid8" type="fixed">
+  <origin xyz="-0.000125 0.0435 -0.0115" rpy="0 0 0"/>
+  <parent link="brk5_1"/>
+  <child link="J4_1"/>
+</joint>
+
+<joint name="Revolute4" type="revolute">
+  <origin xyz="-6e-06 0.002 0.012" rpy="0 0 0"/>
+  <parent link="J4_1"/>
+  <child link="brk6_1"/>
+  <axis xyz="0.002879 0.999996 0.0"/>
+  <limit upper="3.141593" lower="-3.141593" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid9" type="fixed">
+  <origin xyz="0.016975 0.008549 0.011" rpy="0 0 0"/>
+  <parent link="brk6_1"/>
+  <child link="J5_1"/>
+</joint>
+
+<joint name="Revolute5" type="revolute">
+  <origin xyz="0.001908 0.032006 -0.011" rpy="0 0 0"/>
+  <parent link="J5_1"/>
+  <child link="brk7_1"/>
+  <axis xyz="0.999996 0.002879 0.0"/>
+  <limit upper="1.989675" lower="-1.989675" effort="100" velocity="100"/>
+</joint>
+
+<joint name="Rigid10" type="fixed">
+  <origin xyz="-0.019082 0.028445 0.0" rpy="0 0 0"/>
+  <parent link="brk7_1"/>
+  <child link="brk8_1"/>
+</joint>
+
+<joint name="Rigid11" type="fixed">
+  <origin xyz="-4e-06 0.0015 -0.012" rpy="0 0 0"/>
+  <parent link="brk8_1"/>
+  <child link="gripper_1"/>
+</joint>
+
+<joint name="Rigid12" type="fixed">
+  <origin xyz="-0.00043 0.131899 0.0" rpy="0 0 0"/>
+  <parent link="gripper_1"/>
+  <child link="brk9_1"/>
+</joint>
+
+<link name="camera_link">
+  <visual>
+    <geometry>
+      <sphere radius="0.005"/>
+    </geometry>
+  </visual>
+</link>
+
+<joint name="camera_mount_joint" type="fixed">
+  <parent link="brk8_1"/>
+  <child link="camera_link"/>
+  <origin xyz="0.0115 0.03045 0.0458" rpy="0 0 0"/>
+</joint>
+
+<link name="camera_color_optical_frame"/>
+
+<joint name="camera_color_optical_joint" type="fixed">
+  <parent link="camera_link"/>
+  <child link="camera_color_optical_frame"/>
+  <origin xyz="0 0 0" rpy="-1.5708 0 0"/>
+</joint>
+
+</robot>
