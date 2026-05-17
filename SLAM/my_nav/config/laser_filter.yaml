@@ -1,0 +1,29 @@
+scan_filter_chain:
+  - name: box_filter
+    type: laser_filters/LaserScanBoxFilter
+    params:
+      box_frame: base_link         # 기준 좌표계. 일반적으로 base_link
+      min_x: -0.40                 # 로봇 중심에서 뒤쪽(-)으로 40cm
+      max_x: 0.347                 # 로봇 중심에서 앞쪽(+)으로 34.7cm
+      min_y: -0.30                 # 로봇 중심에서 왼쪽/오른쪽으로 30cm
+      max_y: 0.30
+      min_z: -1.0
+      max_z: 1.0
+      invert: false
+
+  # 0.0처럼 range_min보다 작은 무효값을 16.0m로 치환
+  # 목적: costmap clearing ray가 생기도록 만들기 위함
+  - name: range_filter
+    type: laser_filters/LaserScanRangeFilter
+    params:
+      use_message_range_limits: false
+      lower_threshold: 0.13
+      upper_threshold: 16.0
+      lower_replacement_value: 16.0
+      upper_replacement_value: 16.0
+
+#  - name: angular_bounds_filter
+#    type: laser_filters/LaserScanAngularBoundsFilter
+#    params:
+#      lower_angle: -2.618   # -150도
+#      upper_angle:  2.618   # +150도

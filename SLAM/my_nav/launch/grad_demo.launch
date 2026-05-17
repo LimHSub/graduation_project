@@ -1,0 +1,400 @@
+<launch>
+  <!-- =================================================================== -->
+  <!-- ===== 공통 인자 ===== -->
+  <!-- =================================================================== -->
+  <arg name="record" default="false"/>
+  <arg name="waypoints_yaml" default="$(find my_nav)/config/waypoints.yaml"/>
+
+  <!-- USB 카메라 인자 -->
+  <arg name="cam_device" default="/dev/video8"/>
+  <arg name="cam_info_url" default="file:///home/inwoong/catkin_ws/src/aruco_detector/config/camera.yaml"/>
+
+  <!-- RealSense / Depth 카메라 인자 -->
+  <arg name="enable_depth_camera" default="true"/>
+  <arg name="realsense_align_depth" default="true"/>
+
+  <!-- 컨트롤러 / 디버그 사용 여부 -->
+  <arg name="enable_camera_pipeline" default="true"/>
+  <arg name="enable_marker_controller" default="true"/>
+  <arg name="enable_panel_controller" default="true"/>
+  <arg name="enable_vision_debug_selector" default="true"/>
+  <arg name="enable_vision_debug_view" default="true"/>
+
+  <!-- 패널 인식 모델 인자 -->
+  <arg name="panel_model_path" default="/home/inwoong/panel_best.pt"/>
+  <arg name="panel_target_class_name" default="left_panel"/>
+
+  <!-- 디버그 이미지 토픽 -->
+  <arg name="marker_debug_image_topic" default="/usb_cam/image_raw"/>
+  <arg name="panel_debug_image_topic"  default="/panel/debug_image"/>
+  <arg name="vision_debug_image_topic" default="/vision_debug/image"/>
+  <arg name="vision_debug_mode_topic"  default="/vision_debug_mode"/>
+
+  <!-- =================================================================== -->
+  <!-- ===== 1) 라이다 필터 ===== -->
+  <!-- =================================================================== -->
+  <node pkg="laser_filters" type="scan_to_scan_filter_chain" name="scan_filter" output="screen">
+    <rosparam command="load" file="$(find my_nav)/config/laser_filter.yaml" />
+    <remap from="scan" to="/scan" />
+    <remap from="scan_filtered" to="/scan_filtered" />
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 2) TF 고정(라이다 / IMU / 카메라) ===== -->
+  <!-- =================================================================== -->
+  <node pkg="tf"
+        type="static_transform_publisher"
+        name="base_to_amr_base_tf"
+        args="0 0 0 0 0 0 base_link amr_base_link 100"/>
+        
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_link_to_laser"
+        args="0 0 0.32 0 0 3.141592 base_link laser_frame" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_link_to_imu"
+        args="0 0 0.27 0 0 0 base_link imu_link" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_link_to_usb_cam"
+        args="0.10 0.0 0.27 0 0 0 base_link usb_cam" />
+
+  <!-- =================================================================== -->
+  <!-- ===== 3) nav stack 관리자 ===== -->
+  <!-- ===== map_server / amcl / move_base 는 nav_stack.launch 에서 실행 ===== -->
+  <!-- =================================================================== -->
+  <node pkg="my_robot_odom" type="map_mux.py" name="map_mux" output="screen">
+    <!-- 어떤 맵으로 시작할지 -->
+    <param name="start_with_map_b" value="false"/>
+    <param name="publish_init_on_start" value="true"/>
+
+    <!-- nav_stack.launch 실행 정보 -->
+    <param name="nav_launch_pkg" value="my_nav"/>
+    <param name="nav_launch_file" value="nav_stack.launch"/>
+    <param name="nav_record" value="false"/>
+
+    <!-- 맵 파일 -->
+    <param name="map_a_file" value="/home/inwoong/catkin_ws/src/my_map/map_1F.yaml"/>
+    <param name="map_b_file" value="/home/inwoong/catkin_ws/src/my_map/map_vcc.yaml"/>
+ 
+    <!-- 초기 pose -->
+    <rosparam param="mapA_initial">[0, 0, 0]</rosparam>
+    <rosparam param="mapB_initial">[4.72, -16.67, -3.14]</rosparam>
+
+    <!-- covariance -->
+    <param name="pose_cov_xy" value="0.25"/>
+    <param name="pose_cov_yaw" value="0.20"/>
+
+    <param name="initialpose_topic" value="/initialpose"/>
+    <param name="amcl_pose_topic" value="/amcl_pose"/>
+    <param name="move_base_action_name" value="move_base"/>
+
+    <!-- clear costmap -->
+    <param name="clear_costmap" value="true"/>
+    <param name="clear_srv_name" value="/move_base/clear_costmaps"/>
+    <param name="post_clear_delay" value="1.0"/>
+    <param name="double_clear" value="true"/>
+
+    <!-- 재기동 타이밍 -->
+    <param name="switch_settle_sec" value="2.0"/>
+    <param name="startup_timeout" value="20.0"/>
+    <param name="amcl_wait_timeout" value="10.0"/>
+    <param name="shutdown_timeout" value="8.0"/>
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 4) odom / imu ===== -->
+  <!-- =================================================================== -->
+  <node pkg="my_robot_odom" type="odom_imu_grad_demo.py" name="odom_imu" output="screen" respawn="true">
+    <param name="max_cmd_vel_x" value="0.22"/>
+    <param name="max_cmd_vel_theta" value="0.8"/>
+    <param name="pwm_slew_step" value="4"/>
+    <param name="gamepad_override_timeout" value="0.3"/>
+    <param name="turn_deadband" value="0.2"/>
+
+    <param name="topic_cmd_nav" value="/cmd_vel_nav"/>
+    <param name="topic_cmd_doc" value="/cmd_vel_doc"/>
+    <param name="topic_doc_pwm" value="/doc_pwm_cmd"/>
+
+    <param name="max_doc_vel_x" value="0.08"/>
+    <param name="max_doc_vel_theta" value="0.35"/>
+
+    <param name="doc_pwm_min" value="0"/>
+    <param name="doc_pwm_max" value="30"/>
+    <param name="doc_pwm_deadband" value="4"/>
+    <param name="doc_pwm_slew_step" value="4"/>
+
+    <param name="doc_thresh_lin" value="0.01"/>
+    <param name="doc_thresh_ang" value="0.05"/>
+    <param name="doc_turn_deadband" value="0.10"/>
+    <param name="doc_ang_ema_alpha" value="0.4"/>
+
+    <param name="topic_doc_char" value="/doc_cmd_char"/>
+
+    <param name="mode_initial" value="1"/>
+    <param name="allow_keyboard_override" value="true"/>
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 5) EKF ===== -->
+  <!-- =================================================================== -->
+  <node pkg="robot_localization" type="ekf_localization_node" name="ekf_se_odom" output="screen" respawn="true">
+    <rosparam command="load" file="$(find my_nav)/config/ekf.yaml" />
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 6) 카메라 파이프라인 ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg enable_camera_pipeline)">
+
+    <!-- 6-1) USB 카메라 (마커용) -->
+  
+    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+      <param name="video_device" value="$(arg cam_device)"/>
+      <param name="pixel_format" value="mjpeg"/>
+      <param name="image_width"  value="1280"/>
+      <param name="image_height" value="720"/>
+      <param name="framerate"    value="40"/>
+      <param name="camera_name" value="usb_cam"/>
+      <param name="camera_frame_id" value="usb_cam"/>
+      <param name="camera_info_url" value="$(arg cam_info_url)"/>
+    </node>
+
+    <group ns="usb_cam">
+      <node pkg="image_proc" type="image_proc" name="image_proc"/>
+    </group>
+
+    <!-- 아루코 디텍터 -->
+    <node name="aruco_detector" pkg="aruco_detector" type="aruco_detector_node" output="screen">
+      <remap from="~image"       to="/usb_cam/image_raw"/>
+      <remap from="~camera_info" to="/usb_cam/camera_info"/>
+      <param name="use_optical_to_base" value="true"/>
+    </node>
+
+
+    <!-- 6-2) Depth 카메라 (패널용 RealSense) -->
+  
+    <group if="$(arg enable_depth_camera)">
+      <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+        <arg name="align_depth" value="$(arg realsense_align_depth)"/>
+        
+        <!-- RealSense 자체 TF publish 끄기 -->
+        <arg name="publish_tf" value="false"/>
+        <arg name="tf_publish_rate" value="0"/>
+      </include>
+    </group>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 7) 마커 기반 접근 컨트롤러 ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg enable_marker_controller)">
+    <node pkg="aruco_detector" type="marker_controller_grad_demo.py"
+          name="marker_pose_controller" output="screen">
+
+      <!-- 시각화/디버그 이미지 publish 비활성화 -->
+      <param name="view_image" value="false"/>
+      <param name="publish_debug_image" value="false"/>
+
+      <!-- 출력 토픽 -->
+      <param name="cmd_doc_topic"  value="/cmd_vel_doc"/>
+      <param name="char_cmd_topic" value="/doc_cmd_char"/>
+      <param name="doc_pwm_topic"  value="/doc_pwm_cmd"/>
+
+      <!-- 입력 토픽 -->
+      <param name="topic_pose_z"    value="/aruco/pose_z"/>
+      <param name="topic_pose_x"    value="/aruco/pose_x"/>
+      <param name="topic_marker_id" value="/aruco/marker_id"/>
+      <param name="topic_mission"   value="/camera_mission_marker"/>
+      <param name="topic_yaw"       value="/aruco/yaw_b_m"/>
+      <param name="topic_done" value="/marker_mission_done"/>
+      <param name="docking_done_topic" value="/marker_docking_done"/>
+
+      <!-- 기존 호환용 파라미터도 유지 -->
+      <param name="stop_distance_approach" value="0.7"/>
+      <param name="retreat_distance"       value="1.4"/>
+
+      <!-- 속도 -->
+      <param name="forward_speed"  value="0.08"/>
+      <param name="backward_speed" value="0.08"/>
+      <param name="turn_speed"     value="0.35"/>
+      <param name="yaw_turn_speed" value="0.5"/>
+
+      <!-- 검출 유효 시간 -->
+      <param name="marker_timeout_sec" value="0.7"/>
+      <param name="control_hz" value="10.0"/>
+      <param name="left_if_pos" value="true"/>
+
+      <!-- direct pwm -->
+      <param name="use_direct_pwm" value="true"/>
+
+      <param name="pwm_forward_l" value="30"/>
+      <param name="pwm_forward_r" value="30"/>
+
+      <param name="pwm_turn_left_l" value="0"/>
+      <param name="pwm_turn_left_r" value="13"/>
+
+      <param name="pwm_turn_right_l" value="13"/>
+      <param name="pwm_turn_right_r" value="0"/>
+
+      <param name="pwm_backward_l" value="-20"/>
+      <param name="pwm_backward_r" value="-20"/>
+
+      <param name="pwm_retreat_turn_left_l"  value="-13"/>
+      <param name="pwm_retreat_turn_left_r"  value="0"/>
+      <param name="pwm_retreat_turn_right_l" value="0"/>
+      <param name="pwm_retreat_turn_right_r" value="-13"/>
+
+      <param name="pwm_yaw_left_l"  value="0"/>
+      <param name="pwm_yaw_left_r"  value="8"/>
+      <param name="pwm_yaw_right_l" value="8"/>
+      <param name="pwm_yaw_right_r" value="0"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 8) 패널 기반 접근 컨트롤러 ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg enable_panel_controller)">
+    <node pkg="aruco_detector" type="panel_controller_grad_demo.py"
+          name="panel_pose_controller" output="screen">
+
+      <!-- 시각화/디버그 이미지 publish 비활성화 -->
+      <param name="view_image" value="false"/>
+      <param name="publish_debug_image" value="false"/>
+
+      <!-- 출력 토픽 -->
+      <param name="cmd_doc_topic"  value="/cmd_vel_doc"/>
+      <param name="char_cmd_topic" value="/doc_cmd_char"/>
+      <param name="doc_pwm_topic"  value="/doc_pwm_cmd"/>
+      <param name="topic_done" value="/panel_mission_done"/>
+      <param name="docking_done_topic" value="/panel_docking_done"/>
+
+      <!-- 입력 토픽 -->
+      <param name="topic_mission"      value="/camera_mission_panel"/>
+      <param name="rgb_topic"          value="/camera/color/image_raw"/>
+      <param name="depth_topic"        value="/camera/aligned_depth_to_color/image_raw"/>
+      <param name="camera_info_topic"  value="/camera/color/camera_info"/>
+      <param name="debug_image_topic"  value="$(arg panel_debug_image_topic)"/>
+
+      <!-- 모델 -->
+      <param name="model_path"         value="$(arg panel_model_path)"/>
+      <param name="target_class_name"  value="$(arg panel_target_class_name)"/>
+      <param name="conf_threshold"     value="0.55"/>
+      <param name="input_size"         value="640"/>
+
+      <!-- 제어 -->
+      <param name="control_hz"         value="10.0"/>
+      <param name="target_stop_z"      value="0.30"/>
+      <param name="align_x_threshold"  value="0.03"/>
+      <param name="marker_timeout_sec" value="0.7"/>
+      <param name="stop_burst_count"   value="3"/>
+      <param name="left_if_pos"        value="true"/>
+
+      <!-- Twist -->
+      <param name="forward_speed"      value="0.08"/>
+      <param name="backward_speed"     value="0.08"/>
+      <param name="turn_speed"         value="0.35"/>
+
+      <!-- direct pwm -->
+      <param name="use_direct_pwm"     value="true"/>
+      <param name="pwm_forward_l"      value="12"/>
+      <param name="pwm_forward_r"      value="12"/>
+      <param name="pwm_turn_left_l"    value="0"/>
+      <param name="pwm_turn_left_r"    value="6"/>
+      <param name="pwm_turn_right_l"   value="6"/>
+      <param name="pwm_turn_right_r"   value="0"/>
+      <param name="pwm_backward_l"     value="-10"/>
+      <param name="pwm_backward_r"     value="-10"/>
+
+      <!-- depth -->
+      <param name="depth_window"       value="5"/>
+      <param name="max_valid_depth_m"  value="5.0"/>
+      <param name="min_valid_depth_m"  value="0.05"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 9) 단일 디버그 영상 선택기 ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg enable_vision_debug_selector)">
+    <node pkg="my_robot_odom" type="vision_debug_selector.py"
+          name="vision_debug_selector" output="screen">
+      <param name="mode_topic"         value="$(arg vision_debug_mode_topic)"/>
+      <param name="marker_image_topic" value="$(arg marker_debug_image_topic)"/>
+      <param name="panel_image_topic"  value="$(arg panel_debug_image_topic)"/>
+      <param name="output_image_topic" value="$(arg vision_debug_image_topic)"/>
+      <param name="idle_black_image"   value="true"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 10) 디버그 영상 창 ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg enable_vision_debug_view)">
+    <node pkg="image_view" type="image_view" name="vision_debug_view" output="screen">
+      <remap from="image" to="$(arg vision_debug_image_topic)"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 11) 일반 주행 모드 (record=false) ===== -->
+  <!-- =================================================================== -->
+  <group unless="$(arg record)">
+    <include file="$(find amr_re_description)/launch/display.launch"/>
+
+    <node pkg="my_robot_odom" type="waypoint_navigator_grad_demo_panel.py" name="waypoint_navigator" output="screen"
+          launch-prefix="bash -c 'sleep 4; $0 $@'">
+      <param name="yaml_path" value="$(arg waypoints_yaml)"/>
+      <param name="enable_uart" value="false"/>
+      <param name="goal_timeout" value="120.0"/>
+      <param name="retry_max" value="2"/>
+
+      <param name="map_frame" value="map"/>
+      <param name="switch_map_srv" value="/map_mux/switch_map"/>
+      <param name="switch_settle_sec" value="2.0"/>
+
+      <param name="wait_for_amcl" value="false"/>
+      <param name="move_base_wait_timeout" value="20.0"/>
+      <param name="amcl_wait_timeout_after_switch" value="12.0"/>
+      <param name="amcl_pose_topic" value="/amcl_pose"/>
+      <param name="move_base_action_name" value="move_base"/>
+
+      <!-- 분리된 mission topic -->
+      <param name="panel_mission_topic"  value="/camera_mission_panel"/>
+      <param name="marker_mission_topic" value="/camera_mission_marker"/>
+
+      <!-- 현재 컨트롤러는 legacy done topic 사용 -->
+      <!-- 분리된 done topic 사용 -->
+      <param name="use_panel_mission_done"  value="true"/>
+      <param name="use_marker_mission_done" value="true"/>
+      <param name="use_panel_docking_done"  value="true"/>
+      <param name="use_marker_docking_done" value="true"/>
+
+      <param name="panel_mission_done_topic"  value="/panel_mission_done"/>
+      <param name="marker_mission_done_topic" value="/marker_mission_done"/>
+      <param name="panel_docking_done_topic"  value="/panel_docking_done"/>
+      <param name="marker_docking_done_topic" value="/marker_docking_done"/>
+
+      <!-- legacy done topic은 사용하지 않음 -->
+      <param name="use_legacy_camera_mission_done" value="false"/>
+      <param name="use_legacy_docking_done"        value="false"/>
+
+      <!-- 디버그 화면 선택 모드 -->
+      <param name="vision_debug_mode_topic" value="$(arg vision_debug_mode_topic)"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 12) 기록 모드 (record=true) ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg record)">
+    <include file="$(find amr_re_description)/launch/display.launch"/>
+
+    <node pkg="my_robot_odom" type="waypoint_recorder.py" name="waypoint_recorder" output="screen">
+      <param name="map_frame" value="map"/>
+      <param name="output" value="$(arg waypoints_yaml)"/>
+      <param name="name_prefix" value="p"/>
+    </node>
+  </group>
+</launch>

@@ -1,0 +1,392 @@
+<launch>
+  <!-- =================================================================== -->
+  <!-- ===== 공통 인자 ===== -->
+  <!-- =================================================================== -->
+  <arg name="record" default="false"/>
+  <arg name="waypoints_yaml" default="$(find my_nav)/config/waypoints.yaml"/>
+
+  <!-- USB 카메라 인자 -->
+  <arg name="cam_device" default="/dev/video8"/>
+  <arg name="cam_info_url" default="file:///home/inwoong/catkin_ws/src/aruco_detector/config/camera.yaml"/>
+
+  <!-- 뎁스카메라 인자 -->
+  <arg name="enable_depth_camera" default="true"/>
+  <arg name="depth_camera_name" default="camera"/>
+
+  <!-- RealSense 사용 기준 예시 -->
+  <arg name="depth_serial_no" default=""/>
+  <arg name="depth_align" default="true"/>
+  <arg name="depth_width" default="640"/>
+  <arg name="depth_height" default="480"/>
+  <arg name="depth_fps" default="30"/>
+  <arg name="color_width" default="640"/>
+  <arg name="color_height" default="480"/>
+  <arg name="color_fps" default="30"/>
+
+  <!-- 아루코/도킹 컨트롤러 사용 여부 -->
+  <arg name="enable_camera_pipeline" default="true"/>
+  <arg name="enable_marker_controller" default="true"/>
+
+  <!-- =================================================================== -->
+  <!-- ===== 1) 라이다 필터 ===== -->
+  <!-- =================================================================== -->
+  <node pkg="laser_filters" type="scan_to_scan_filter_chain" name="scan_filter" output="screen">
+    <rosparam command="load" file="$(find my_nav)/config/laser_filter.yaml" />
+    <remap from="scan" to="/scan" />
+    <remap from="scan_filtered" to="/scan_filtered" />
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 2) TF 고정(라이다 / IMU / 카메라) ===== -->
+  <!-- =================================================================== -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_link_to_laser"
+        args="0 0 0.32 0 0 3.141592 base_link laser_frame" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_link_to_imu"
+        args="0 0 0.27 0 0 0 base_link imu_link" />
+
+  <!-- 기존 USB 카메라 -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_link_to_usb_cam"
+        args="0.10 0.0 0.27 0 0 0 base_link usb_cam" />
+
+  <!-- 추가: 뎁스카메라 -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="base_link_to_depth_camera_link"
+        args="0.10 0.0 0.27 0 0 0 base_link camera_link" />
+
+  <!-- optical frame 보정용 (일반적인 depth camera optical frame 기준) -->
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="camera_link_to_color_optical"
+        args="0 0 0 -1.5708 0 -1.5708 camera_link camera_color_optical_frame" />
+
+  <node pkg="tf2_ros" type="static_transform_publisher"
+        name="camera_link_to_depth_optical"
+        args="0 0 0 -1.5708 0 -1.5708 camera_link camera_depth_optical_frame" />
+
+  <!-- =================================================================== -->
+  <!-- ===== 3) map_server 2개: namespace 분리 ===== -->
+  <!-- =================================================================== -->
+
+  <!-- Map A -->
+  <group ns="mapA">
+    <node pkg="map_server" type="map_server" name="map_server"
+          args="/home/inwoong/catkin_ws/src/my_map/map_1F.yaml" output="screen">
+      <remap from="map" to="/map_A"/>
+      <remap from="map_metadata" to="/map_A_metadata"/>
+    </node>
+  </group>
+
+  <!-- Map B -->
+  <group ns="mapB">
+    <node pkg="map_server" type="map_server" name="map_server"
+          args="/home/inwoong/catkin_ws/src/my_map/map_vcc.yaml" output="screen">
+      <remap from="map" to="/map_B"/>
+      <remap from="map_metadata" to="/map_B_metadata"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 4) map_mux: /map + /map_metadata + /static_map 단일화 ===== -->
+  <!-- =================================================================== -->
+  <node pkg="my_robot_odom" type="map_mux.py" name="map_mux" output="screen">
+    <param name="topic_map_a" value="/map_A"/>
+    <param name="topic_map_b" value="/map_B"/>
+
+    <param name="topic_meta_a" value="/map_A_metadata"/>
+    <param name="topic_meta_b" value="/map_B_metadata"/>
+
+    <!-- 시작은 A -->
+    <param name="start_with_map_b" value="false"/>
+
+    <!-- 부팅 시 initpose 자동발행 -->
+    <param name="publish_init_on_start" value="true"/>
+
+    <!-- 전환 시 costmap clear -->
+    <param name="clear_costmap" value="true"/>
+    <param name="clear_srv_name" value="/move_base/clear_costmaps"/>
+    <param name="post_clear_delay" value="1.0"/>
+    <param name="double_clear" value="true"/>
+
+    <param name="switch_settle_sec" value="2.0"/>
+    <param name="wait_for_map_odom_tf" value="true"/>
+    <param name="tf_wait_timeout" value="3.0"/>
+
+    <param name="nudge_enable" value="false"/>
+    <param name="nudge_cmd_topic" value="/cmd_vel_nav"/>
+    <param name="nudge_ang_z" value="0.35"/>
+    <param name="nudge_duration" value="0.25"/>
+    <param name="nudge_rate" value="20.0"/>
+
+    <!-- prohibition layer -->
+    <param name="toggle_prohibition_on_map_b" value="true"/>
+    <param name="prohibition_dyn_ns" value="/move_base/global_costmap/prohibition_layer"/>
+    <param name="prohibition_enable_on_map_a" value="false"/>
+    <param name="prohibition_enable_on_map_b" value="false"/>
+
+    <!-- 초기 pose -->
+    <rosparam param="mapA_initial">[0, 0, 0]</rosparam>
+    <rosparam param="mapB_initial">[4.72, -16.67, -3.14]</rosparam>
+
+    <!-- covariance -->
+    <param name="pose_cov_xy" value="0.25"/>
+    <param name="pose_cov_yaw" value="0.20"/>
+
+    <param name="initialpose_topic" value="/initialpose"/>
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 5) 오도메트리 / IMU / EKF ===== -->
+  <!-- =================================================================== -->
+  <node pkg="my_robot_odom" type="odom_imu_grad_demo.py" name="odom_imu" output="screen">
+    <param name="max_cmd_vel_x" value="0.3"/>
+    <param name="max_cmd_vel_theta" value="0.3"/>
+    <param name="pwm_slew_step" value="6"/>
+    <param name="gamepad_override_timeout" value="1.0"/>
+    <param name="turn_deadband" value="0.16"/>
+
+    <!-- cmd_vel 분리 -->
+    <param name="topic_cmd_nav" value="/cmd_vel_nav"/>
+    <param name="topic_cmd_doc" value="/cmd_vel_doc"/>
+
+    <!-- 추가: direct PWM 토픽 -->
+    <param name="topic_doc_pwm" value="/doc_pwm_cmd"/>
+
+    <!-- 추가: 도킹용 저속 파라미터 -->
+    <param name="max_doc_vel_x" value="0.15"/>
+    <param name="max_doc_vel_theta" value="0.8"/>
+    <param name="doc_pwm_min" value="8"/>
+    <param name="doc_pwm_max" value="50"/>
+    <param name="doc_pwm_deadband" value="8"/>
+    <param name="doc_pwm_slew_step" value="2"/>
+    <param name="doc_thresh_lin" value="0.005"/>
+    <param name="doc_thresh_ang" value="0.05"/>
+    <param name="doc_turn_deadband" value="0.03"/>
+    <param name="doc_ang_ema_alpha" value="0.7"/>
+    <param name="topic_doc_char" value="/doc_cmd_char"/>
+
+    <!-- 초기 모드 -->
+    <param name="mode_initial" value="1"/>
+    <param name="allow_keyboard_override" value="true"/>
+  </node>
+
+  <node pkg="robot_localization" type="ekf_localization_node" name="ekf_se_odom" output="screen" respawn="true">
+    <rosparam command="load" file="$(find my_nav)/config/ekf.yaml" />
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 6) AMCL ===== -->
+  <!-- =================================================================== -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen"
+        launch-prefix="bash -c 'sleep 2; $0 $@'">
+    <param name="odom_frame_id" value="odom" />
+    <param name="base_frame_id" value="base_link" />
+    <param name="scan_topic" value="/scan_filtered" />
+    <param name="min_particles" value="2000" />
+    <param name="max_particles" value="6000" />
+    <param name="laser_max_beams" value="60" />
+    <param name="laser_max_range" value="16.0" />
+    <param name="laser_min_range" value="0.1" />
+    <param name="odom_alpha1" value="0.05" />
+    <param name="odom_alpha2" value="0.05" />
+    <param name="odom_alpha3" value="0.1" />
+    <param name="odom_alpha4" value="0.1" />
+    <param name="laser_z_hit" value="0.7" />
+    <param name="laser_sigma_hit" value="0.2" />
+    <param name="laser_z_rand" value="0.05" />
+    <param name="transform_tolerance" value="0.2" />
+    <param name="update_min_d" value="0.01" />
+    <param name="update_min_a" value="0.01" />
+    <param name="resample_interval" value="2" />
+    <param name="recovery_alpha_slow" value="0.0" />
+    <param name="recovery_alpha_fast" value="0.0" />
+  </node>
+
+  <!-- =================================================================== -->
+  <!-- ===== 7) 일반 주행 모드 (record=false) ===== -->
+  <!-- =================================================================== -->
+  <group unless="$(arg record)">
+    <include file="$(find amr_re_description)/launch/display.launch"/>
+
+    <node pkg="move_base" type="move_base" name="move_base" output="screen"
+          launch-prefix="bash -c 'sleep 4; $0 $@'">
+      <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
+
+      <rosparam file="$(find my_nav)/config/costmap.yaml" command="load" ns="" />
+      <rosparam file="$(find my_nav)/config/move_base.yaml" command="load" />
+      <rosparam file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="global_costmap"/>
+      <rosparam file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="local_costmap"/>
+
+      <param name="planner_frequency" value="2.0" />
+      <param name="controller_frequency" value="10.0" />
+
+      <param name="global_costmap/transform_tolerance" value="2.0" />
+      <param name="local_costmap/transform_tolerance" value="2.0" />
+
+      <!-- 멀티맵: map 업데이트 계속 반영 -->
+      <param name="global_costmap/static_layer/first_map_only" value="false" />
+
+      <remap from="/cmd_vel" to="/cmd_vel_nav"/>
+    </node>
+
+    <node pkg="my_robot_odom" type="waypoint_navigator_grad_demo.py" name="waypoint_navigator" output="screen"
+          launch-prefix="bash -c 'sleep 4; $0 $@'">
+      <param name="yaml_path" value="$(arg waypoints_yaml)"/>
+      <param name="enable_uart" value="false"/>
+      <param name="goal_timeout" value="120.0"/>
+      <param name="retry_max" value="2"/>
+
+      <param name="map_frame" value="map"/>
+      <param name="switch_map_srv" value="/map_mux/switch_map"/>
+      <param name="switch_settle_sec" value="2.0"/>
+
+      <param name="wait_for_amcl" value="true"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 8) 기록 모드 (record=true) ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg record)">
+    <include file="$(find amr_re_description)/launch/display.launch"/>
+
+    <node pkg="my_robot_odom" type="waypoint_recorder.py" name="waypoint_recorder" output="screen">
+      <param name="map_frame" value="map"/>
+      <param name="output" value="$(arg waypoints_yaml)"/>
+      <param name="name_prefix" value="p"/>
+    </node>
+
+    <node pkg="move_base" type="move_base" name="move_base" output="screen">
+      <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
+
+      <rosparam file="$(find my_nav)/config/costmap.yaml" command="load" ns="" />
+      <rosparam file="$(find my_nav)/config/move_base.yaml" command="load" />
+      <rosparam file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="global_costmap"/>
+      <rosparam file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="local_costmap"/>
+
+      <param name="controller_frequency" value="5.0" />
+      <param name="global_costmap/transform_tolerance" value="2.0" />
+      <param name="local_costmap/transform_tolerance" value="2.0" />
+      <param name="global_costmap/static_layer/first_map_only" value="false" />
+
+      <remap from="/move_base_simple/goal" to="/move_base_simple/goal_live"/>
+      <remap from="/cmd_vel" to="/cmd_vel_nav"/>
+    </node>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 9) 카메라 / 아루코 / 뎁스카메라 파이프라인 ===== -->
+  <!-- =================================================================== -->
+  <group if="$(arg enable_camera_pipeline)">
+    <!-- ========================= -->
+    <!-- 9-1) 기존 USB 카메라 -->
+    <!-- ========================= -->
+    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+      <param name="video_device" value="$(arg cam_device)"/>
+      <param name="pixel_format" value="mjpeg"/>
+      <param name="image_width"  value="1280"/>
+      <param name="image_height" value="720"/>
+      <param name="framerate"    value="40"/>
+      <param name="camera_name" value="usb_cam"/>
+      <param name="camera_frame_id" value="usb_cam"/>
+      <param name="camera_info_url" value="$(arg cam_info_url)"/>
+    </node>
+
+    <group ns="usb_cam">
+      <node pkg="image_proc" type="image_proc" name="image_proc"/>
+    </group>
+
+    <!-- 기존 아루코 디텍터 -->
+    <node name="aruco_detector" pkg="aruco_detector" type="aruco_detector_node" output="screen">
+      <remap from="~image"       to="/usb_cam/image_raw"/>
+      <remap from="~camera_info" to="/usb_cam/camera_info"/>
+      <param name="use_optical_to_base" value="true"/>
+    </node>
+
+    <!-- ========================= -->
+    <!-- 9-2) 추가: 뎁스카메라 -->
+    <!-- ========================= -->
+    <group if="$(arg enable_depth_camera)">
+      <!-- RealSense 기준 예시 -->
+      <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+         <arg name="camera" value="$(arg depth_camera_name)"/>
+         <arg name="serial_no" value="$(arg depth_serial_no)"/>
+
+         <!-- 지원되는 인자만 사용 -->
+         <arg name="align_depth" value="$(arg depth_align)"/>
+
+         <arg name="enable_color" value="true"/>
+         <arg name="enable_depth" value="true"/>
+         <arg name="enable_infra1" value="false"/>
+         <arg name="enable_infra2" value="false"/>
+
+         <!-- 해상도/FPS는 구버전 형식으로 분리 -->
+         <arg name="color_width" value="$(arg color_width)"/>
+         <arg name="color_height" value="$(arg color_height)"/>
+         <arg name="color_fps" value="$(arg color_fps)"/>
+
+         <arg name="depth_width" value="$(arg depth_width)"/>
+         <arg name="depth_height" value="$(arg depth_height)"/>
+         <arg name="depth_fps" value="$(arg depth_fps)"/>
+     </include>
+    </group>
+  </group>
+
+  <!-- =================================================================== -->
+  <!-- ===== 10) 마커 기반 접근 컨트롤러 ===== -->
+  <!-- =================================================================== -->
+  <!-- =================================================================== -->
+<!-- ===== 10) 패널 인식 기반 접근 컨트롤러 ===== -->
+<!-- =================================================================== -->
+<group if="$(arg enable_marker_controller)">
+  <node pkg="aruco_detector"
+        type="marker_pose_controller_grad_demo_panel.py"
+        name="marker_pose_controller"
+        output="screen">
+
+    <param name="cmd_doc_topic" value="/cmd_vel_doc"/>
+    <param name="char_cmd_topic" value="/doc_cmd_char"/>
+    <param name="doc_pwm_topic" value="/doc_pwm_cmd"/>
+    <param name="topic_mission" value="/camera_mission"/>
+
+    <!-- 뎁스카메라 입력 -->
+    <param name="rgb_topic" value="/camera/color/image_raw"/>
+    <param name="depth_topic" value="/camera/aligned_depth_to_color/image_raw"/>
+    <param name="camera_info_topic" value="/camera/color/camera_info"/>
+
+    <!-- 디버그 영상 출력 -->
+    <param name="debug_image_topic" value="/marker_pose_controller/debug_image"/>
+
+    <!-- YOLO -->
+    <param name="model_path" value="/home/inwoong/panel_best.pt"/>
+    <param name="target_class_name" value="left_panel"/>
+    <param name="conf_threshold" value="0.55"/>
+    <param name="input_size" value="640"/>
+
+    <!-- 제어 파라미터 -->
+    <param name="control_hz" value="10.0"/>
+    <param name="target_stop_z" value="0.30"/>
+    <param name="align_x_threshold" value="0.03"/>
+    <param name="marker_timeout_sec" value="0.7"/>
+    <param name="left_if_pos" value="true"/>
+
+    <!-- direct PWM -->
+    <param name="use_direct_pwm" value="true"/>
+    <param name="pwm_forward_l" value="30"/>
+    <param name="pwm_forward_r" value="30"/>
+    <param name="pwm_turn_left_l" value="0"/>
+    <param name="pwm_turn_left_r" value="10"/>
+    <param name="pwm_turn_right_l" value="10"/>
+    <param name="pwm_turn_right_r" value="0"/>
+    <param name="pwm_backward_l" value="-30"/>
+    <param name="pwm_backward_r" value="-30"/>
+  </node>
+  <node pkg="image_view" type="image_view" name="panel_debug_view" output="screen">
+  <remap from="image" to="/marker_pose_controller/debug_image"/>
+</node>
+</group>
+</launch>
