@@ -1,0 +1,23 @@
+<launch>
+  <!-- move_group 실행 전 대기 시간 [sec] -->
+  <arg name="move_group_delay" default="3.0" />
+
+  <!-- 로봇팔 하드웨어 bringup -->
+  <include file="$(find my_arm_bringup)/launch/bringup.launch" />
+
+  <!-- MoveIt move_group 실행: bringup/joint_states 안정화 후 실행 -->
+  <include file="$(find robot_arm)/launch/move_group.launch">
+    <arg name="allow_trajectory_execution" value="true" />
+    <arg name="moveit_controller_manager" value="simple" />
+    <arg name="pipeline" value="ompl" />
+    <arg name="launch_prefix" value="bash -c 'sleep $(arg move_group_delay); exec $0 $@'" />
+  </include>
+
+  <!-- 로봇팔 미션 관리자 노드: 필요하면 주석 해제 -->
+  <!--
+  <node pkg="my_robot_odom"
+        type="robot_arm_grad_demo.py"
+        name="robot_arm_manager"
+        output="screen" />
+  -->
+</launch>

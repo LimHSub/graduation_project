@@ -1,0 +1,43 @@
+<launch>
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro --inorder '$(find omxa_description)/urdf/omxa.xacro'"/>
+
+  <node pkg="robot_state_publisher"
+        type="robot_state_publisher"
+        name="robot_state_publisher"
+        output="screen" />
+
+  <node pkg="my_arm_bringup"
+        type="arm_hw_node"
+        name="arm_hw_node"
+        output="screen">
+
+    <param name="port" value="/dev/ttyACM1"/>
+    <param name="baud" value="115200"/>
+    <param name="loop_hz" value="100"/>
+
+    <param name="debug_tx" value="true"/>
+    <param name="debug_rx" value="true"/>
+
+    <param name="unwrap_enable" value="false"/>
+
+    <rosparam param="home_rad">[1.573, 0.081, 0.081, -3.142, 0.003]</rosparam>
+    <rosparam param="sign">[1, 1, 1, 1, 1]</rosparam>
+  </node>
+
+  <rosparam file="$(find my_arm_bringup)/config/controllers.yaml" command="load"/>
+
+  <node pkg="controller_manager"
+        type="spawner"
+        name="spawner_js"
+        output="screen"
+        args="joint_state_controller" />
+
+  <node pkg="controller_manager"
+        type="spawner"
+        name="spawner_arm"
+        output="screen"
+        args="arm_controller" />
+
+</launch>

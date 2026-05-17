@@ -1,0 +1,18 @@
+<launch>
+  <arg name="move_group_delay" default="3.0" />
+
+  <include file="$(find my_arm_bringup)/launch/bringup.launch" />
+
+  <include file="$(find robot_arm)/launch/move_group_delayed.launch">
+    <arg name="allow_trajectory_execution" value="true" />
+    <arg name="moveit_controller_manager" value="simple" />
+    <arg name="pipeline" value="ompl" />
+    <arg name="move_group_delay" value="$(arg move_group_delay)" />
+  </include>
+
+  <node pkg="my_robot_odom"
+        type="robot_arm_grad_demo.py"
+        name="robot_arm_manager"
+        output="screen" />
+
+</launch>
