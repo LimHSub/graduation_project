@@ -1,6 +1,6 @@
-[엘레베이터 버튼 인식]
+[엘레베이터 버튼 인식] home/catkin_ws 아래에 위치
 best1.pt
 best2.pt
 
-[패널 인식]
+[패널 인식] home 아래에 위치
 panel_best.pt
