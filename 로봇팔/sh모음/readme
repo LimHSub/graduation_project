@@ -1,5 +1,5 @@
-[패널 기반 주행할때 로봇팔 자세]
+[패널 기반 주행할때 로봇팔 자세] home 아래에 위치
 move_start_psoe_paenl.sh
 
-[엘레베이터 버튼 인식할때 로봇팔 자세]
+[엘레베이터 버튼 인식할때 로봇팔 자세] home 아래에 위치
 move_start_pose_right.sh
