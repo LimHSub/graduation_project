@@ -1,0 +1,28 @@
+%YAML:1.0
+image_width: 1280
+image_height: 720
+camera_name: usb_cam
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [941.684536, 0.0, 628.218540,
+         0.0, 939.056580, 390.595944,
+         0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.087510, -0.169995, 0.013769, 0.004019, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [947.812500, 0.0, 632.500690, 0.0,
+         0.0, 950.357727, 397.707891, 0.0,
+         0.0, 0.0, 1.0, 0.0]
+

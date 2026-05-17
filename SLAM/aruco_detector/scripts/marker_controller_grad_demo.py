@@ -1,0 +1,602 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import rospy
+from std_msgs.msg import Float64, Int32, Bool, String, Int16MultiArray
+from geometry_msgs.msg import Twist
+import time
+
+
+class MarkerPoseControllerGradDemo:
+    """
+    /camera_mission 규칙
+      +N : marker id N 을 보고 접근(approach)
+      -N : marker id N 을 보고 후진(retreat)
+
+    기능:
+      - /cmd_vel_doc publish
+      - /doc_cmd_char publish
+      - /doc_pwm_cmd publish
+      - /marker_docking_done, /marker_mission_done publish
+      - marker id 확인
+      - timer 기반 제어
+      - APPROACH 구간별 pose_x 목표값 기반 정렬 주행
+      - APPROACH 마지막 yaw 정렬
+      - RETREAT 목표 거리 도달 시 종료
+      - RETREAT 시 정렬 오차가 크면 후진하면서 정렬하는 PWM 사용
+      - APPROACH 시작 전 사전 후진 기능
+
+    좌표 해석:
+      - pose_x : 좌우 오차 또는 base_link 기준 lateral 값
+      - pose_z : 마커까지 전방 거리
+      - yaw    : 마커 yaw(deg)
+    """
+
+    MODE_IDLE = 0
+    MODE_APPROACH = 1
+    MODE_RETREAT = 2
+    MODE_PRE_BACKWARD = 3
+
+    def __init__(self):
+        rospy.init_node('marker_pose_controller_grad_demo')
+
+        # =====================================================
+        # Params
+        # =====================================================
+        self.cmd_doc_topic = rospy.get_param("~cmd_doc_topic", "/cmd_vel_doc")
+        self.char_cmd_topic = rospy.get_param("~char_cmd_topic", "/doc_cmd_char")
+        self.doc_pwm_topic = rospy.get_param("~doc_pwm_topic", "/doc_pwm_cmd")
+
+        self.topic_pose_x = rospy.get_param("~topic_pose_x", "/aruco/pose_x")
+        self.topic_pose_z = rospy.get_param("~topic_pose_z", "/aruco/pose_z")
+        self.topic_marker_id = rospy.get_param("~topic_marker_id", "/aruco/marker_id")
+        self.topic_mission = rospy.get_param("~topic_mission", "/camera_mission")
+        self.topic_yaw = rospy.get_param("~topic_yaw", "/aruco/yaw_b_m")
+
+        # 정렬 허용 오차
+        self.angle_threshold = float(rospy.get_param("~angle_threshold", 0.15))
+        self.yaw_threshold = float(rospy.get_param("~yaw_threshold", 1.0))
+
+        # 목표 yaw
+        self.target_yaw = float(rospy.get_param("~target_yaw", -83.0))
+
+        # =====================================================
+        # APPROACH 구간 기준
+        # =====================================================
+        # 기존 조건:
+        #   dist > 1.85            -> pose_x = 0.0 기준
+        #   0.85 < dist <= 1.85    -> pose_x = -0.3 기준
+        #   0.6 < dist <= 0.85     -> pose_x = 0.2 기준
+        #   dist <= 0.6            -> stop + yaw 정렬
+        #
+        # 수정 조건:
+        #   dist > 1.85            -> pose_x = 0.0 기준
+        #   1.20 < dist <= 1.85    -> pose_x = -0.3 기준
+        #   0.85 < dist <= 1.20    -> pose_x = -0.1 기준
+        #   0.6 < dist <= 0.85     -> pose_x = 0.2 기준
+        #   dist <= 0.6            -> stop + yaw 정렬
+        self.approach_stage1_dist = float(rospy.get_param("~approach_stage1_dist", 1.85))
+        self.approach_stage1_5_dist = float(rospy.get_param("~approach_stage1_5_dist", 1.00))
+        self.approach_stage2_dist = float(rospy.get_param("~approach_stage2_dist", 0.85))
+        self.approach_stop_dist = float(rospy.get_param("~approach_stop_dist", 0.55))
+
+        self.approach_target_y_far = float(rospy.get_param("~approach_target_y_far", 0.0))
+        self.approach_target_y_mid = float(rospy.get_param("~approach_target_y_mid", -0.3))
+        self.approach_target_y_mid2 = float(rospy.get_param("~approach_target_y_mid2", -0.1))
+        self.approach_target_y_near = float(rospy.get_param("~approach_target_y_near", 0.3))
+
+        # 후진 도킹
+        self.retreat_stage1_limit = float(rospy.get_param("~retreat_stage1_limit", 0.85))
+        self.retreat_finish_dist = float(rospy.get_param("~retreat_finish_dist", 1.50))
+
+        self.retreat_target_y_close = float(rospy.get_param("~retreat_target_y_close", 0.3))
+        self.retreat_target_y_far = float(rospy.get_param("~retreat_target_y_far", -0.40))
+
+        # Twist 속도
+        self.forward_speed = float(rospy.get_param("~forward_speed", 0.10))
+        self.backward_speed = float(rospy.get_param("~backward_speed", 0.08))
+        self.turn_speed = float(rospy.get_param("~turn_speed", 0.8))
+        self.yaw_turn_speed = float(rospy.get_param("~yaw_turn_speed", 0.5))
+
+        self.marker_timeout_sec = float(rospy.get_param("~marker_timeout_sec", 0.7))
+        self.stop_burst_count = int(rospy.get_param("~stop_burst_count", 3))
+
+        # err_positive일 때 좌회전이면 True
+        self.left_if_pos = rospy.get_param("~left_if_pos", True)
+
+        self.control_hz = float(rospy.get_param("~control_hz", 10.0))
+
+        # =====================================================
+        # Direct PWM
+        # =====================================================
+        self.use_direct_pwm = bool(rospy.get_param("~use_direct_pwm", True))
+
+        # 전진 직진
+        self.pwm_forward_l = int(rospy.get_param("~pwm_forward_l", 30))
+        self.pwm_forward_r = int(rospy.get_param("~pwm_forward_r", 30))
+
+        # 전진/일반 회전
+        self.pwm_turn_left_l = int(rospy.get_param("~pwm_turn_left_l", 0))
+        self.pwm_turn_left_r = int(rospy.get_param("~pwm_turn_left_r", 13))
+
+        self.pwm_turn_right_l = int(rospy.get_param("~pwm_turn_right_l", 13))
+        self.pwm_turn_right_r = int(rospy.get_param("~pwm_turn_right_r", 0))
+
+        # 후진 직진
+        self.pwm_backward_l = int(rospy.get_param("~pwm_backward_l", -30))
+        self.pwm_backward_r = int(rospy.get_param("~pwm_backward_r", -30))
+
+        # 후진하면서 정렬하는 PWM
+        self.pwm_retreat_turn_left_l = int(rospy.get_param("~pwm_retreat_turn_left_l", -10))
+        self.pwm_retreat_turn_left_r = int(rospy.get_param("~pwm_retreat_turn_left_r", 0))
+
+        self.pwm_retreat_turn_right_l = int(rospy.get_param("~pwm_retreat_turn_right_l", 0))
+        self.pwm_retreat_turn_right_r = int(rospy.get_param("~pwm_retreat_turn_right_r", -10))
+
+        # yaw 정렬용 PWM
+        self.pwm_yaw_left_l = int(rospy.get_param("~pwm_yaw_left_l", 0))
+        self.pwm_yaw_left_r = int(rospy.get_param("~pwm_yaw_left_r", 8))
+        self.pwm_yaw_right_l = int(rospy.get_param("~pwm_yaw_right_l", 8))
+        self.pwm_yaw_right_r = int(rospy.get_param("~pwm_yaw_right_r", 0))
+
+        # APPROACH 시작 전 사전 후진
+        self.use_pre_backward_on_approach = bool(rospy.get_param("~use_pre_backward_on_approach", True))
+        self.pre_backward_duration = float(rospy.get_param("~pre_backward_duration", 3.0))
+        self.pre_backward_l = int(rospy.get_param("~pre_backward_l", -30))
+        self.pre_backward_r = int(rospy.get_param("~pre_backward_r", -30))
+        self.pre_backward_start_time = None
+        self.pre_backward_next_mode = self.MODE_IDLE
+
+        # =====================================================
+        # ROS pub/sub
+        # =====================================================
+        self.cmd_pub = rospy.Publisher(self.cmd_doc_topic, Twist, queue_size=10)
+        self.char_pub = rospy.Publisher(self.char_cmd_topic, String, queue_size=10)
+        self.pwm_pub = rospy.Publisher(self.doc_pwm_topic, Int16MultiArray, queue_size=10)
+
+        self.topic_done = rospy.get_param("~topic_done", "/marker_mission_done")
+        self.docking_done_topic = rospy.get_param("~docking_done_topic", "/marker_docking_done")
+
+        self.done_pub = rospy.Publisher(self.docking_done_topic, Bool, queue_size=1)
+        self.mdone_pub = rospy.Publisher(self.topic_done, Int32, queue_size=1, latch=True)
+        self.mode_pub = rospy.Publisher("~mode", String, queue_size=1, latch=True)
+
+        rospy.Subscriber(self.topic_pose_x, Float64, self.pose_x_callback, queue_size=1)
+        rospy.Subscriber(self.topic_pose_z, Float64, self.pose_z_callback, queue_size=1)
+        rospy.Subscriber(self.topic_marker_id, Int32, self.marker_id_callback, queue_size=1)
+        rospy.Subscriber(self.topic_mission, Int32, self.mission_callback, queue_size=1)
+        rospy.Subscriber(self.topic_yaw, Float64, self.yaw_callback, queue_size=1)
+
+        # =====================================================
+        # State
+        # =====================================================
+        self.current_pose_x = 0.0
+        self.current_distance = float('inf')
+        self.current_yaw = 0.0
+        self.current_marker_id = None
+
+        self.last_pose_time = 0.0
+        self.last_marker_time = 0.0
+        self.last_yaw_time = 0.0
+
+        self.mode = self.MODE_IDLE
+        self.expected_marker_id = None
+        self.last_completed_marker_id = None
+
+        rospy.Timer(rospy.Duration(1.0 / self.control_hz), self._timer_cb)
+
+        rospy.loginfo(
+            "[marker_pose_controller_grad_demo] ready "
+            "(control_hz=%.1f, angle_threshold=%.3f, yaw_threshold=%.3f, target_yaw=%.3f, direct_pwm=%s)",
+            self.control_hz,
+            self.angle_threshold,
+            self.yaw_threshold,
+            self.target_yaw,
+            str(self.use_direct_pwm)
+        )
+        rospy.loginfo(
+            "[marker_ctrl] APPROACH logic: dist>%.2f -> x=%.2f | %.2f<dist<=%.2f -> x=%.2f | %.2f<dist<=%.2f -> x=%.2f | %.2f<dist<=%.2f -> x=%.2f | dist<=%.2f -> yaw",
+            self.approach_stage1_dist, self.approach_target_y_far,
+            self.approach_stage1_5_dist, self.approach_stage1_dist, self.approach_target_y_mid,
+            self.approach_stage2_dist, self.approach_stage1_5_dist, self.approach_target_y_mid2,
+            self.approach_stop_dist, self.approach_stage2_dist, self.approach_target_y_near,
+            self.approach_stop_dist
+        )
+
+        rospy.spin()
+
+    # =========================================================
+    # Callbacks
+    # =========================================================
+    def pose_x_callback(self, msg):
+        self.current_pose_x = float(msg.data)
+        self.last_pose_time = time.time()
+
+    def pose_z_callback(self, msg):
+        self.current_distance = float(msg.data)
+        self.last_pose_time = time.time()
+
+    def yaw_callback(self, msg):
+        self.current_yaw = float(msg.data)
+        self.last_yaw_time = time.time()
+
+    def marker_id_callback(self, msg):
+        self.current_marker_id = int(msg.data)
+        self.last_marker_time = time.time()
+
+    def mission_callback(self, msg):
+        val = int(msg.data)
+
+        if val == 0:
+            self.mode = self.MODE_IDLE
+            self.expected_marker_id = None
+            self.pre_backward_start_time = None
+            self.pre_backward_next_mode = self.MODE_IDLE
+            self.publish_stop("mission=0 -> idle")
+            self.mode_pub.publish("IDLE")
+            return
+
+        if val > 0:
+            self.expected_marker_id = val
+
+            if self.use_pre_backward_on_approach:
+                self.mode = self.MODE_PRE_BACKWARD
+                self.pre_backward_start_time = time.time()
+                self.pre_backward_next_mode = self.MODE_APPROACH
+                self.mode_pub.publish("PRE_BACKWARD")
+                rospy.loginfo(
+                    "[marker_ctrl] PRE_BACKWARD start before APPROACH marker id=%d, duration=%.2fs, pwm=[%d,%d]",
+                    self.expected_marker_id,
+                    self.pre_backward_duration,
+                    self.pre_backward_l,
+                    self.pre_backward_r
+                )
+            else:
+                self.mode = self.MODE_APPROACH
+                self.pre_backward_start_time = None
+                self.pre_backward_next_mode = self.MODE_IDLE
+                self.mode_pub.publish("APPROACH")
+                rospy.loginfo("[marker_ctrl] APPROACH start for marker id=%d", self.expected_marker_id)
+
+        else:
+            self.mode = self.MODE_RETREAT
+            self.expected_marker_id = abs(val)
+            self.pre_backward_start_time = None
+            self.pre_backward_next_mode = self.MODE_IDLE
+            self.mode_pub.publish("RETREAT")
+            rospy.loginfo("[marker_ctrl] RETREAT start for marker id=%d", self.expected_marker_id)
+
+        self.publish_stop("new mission start")
+
+    def _timer_cb(self, _event):
+        self.run_control()
+
+    # =========================================================
+    # Utils
+    # =========================================================
+    def marker_visible_recently(self):
+        now = time.time()
+        return ((now - self.last_pose_time) < self.marker_timeout_sec) and \
+               ((now - self.last_marker_time) < self.marker_timeout_sec)
+
+    def yaw_visible_recently(self):
+        now = time.time()
+        return (now - self.last_yaw_time) < self.marker_timeout_sec
+
+    def expected_marker_visible(self):
+        if self.expected_marker_id is None:
+            return False
+        if self.current_marker_id is None:
+            return False
+        return self.current_marker_id == self.expected_marker_id
+
+    def publish_twist(self, lin, ang, reason=""):
+        twist = Twist()
+        twist.linear.x = lin
+        twist.angular.z = ang
+        self.cmd_pub.publish(twist)
+        rospy.loginfo("[marker_ctrl] cmd_vel lin=%.3f ang=%.3f | %s", lin, ang, reason)
+
+    def publish_pwm(self, left, right, reason=""):
+        msg = Int16MultiArray()
+        msg.data = [int(left), int(right)]
+        self.pwm_pub.publish(msg)
+        rospy.loginfo("[marker_ctrl] pwm [%d, %d] | %s", int(left), int(right), reason)
+
+    def publish_stop(self, reason="stop"):
+        twist = Twist()
+        stop_pwm = Int16MultiArray()
+        stop_pwm.data = [0, 0]
+
+        for _ in range(self.stop_burst_count):
+            self.cmd_pub.publish(twist)
+            self.pwm_pub.publish(stop_pwm)
+
+        self.char_pub.publish(String(data='x'))
+        rospy.loginfo("[marker_ctrl] STOP | %s", reason)
+
+    def finish_mission(self, reason="done"):
+        marker_id = self.expected_marker_id if self.expected_marker_id is not None else -1
+
+        self.publish_stop(reason)
+        self.done_pub.publish(Bool(data=True))
+        if marker_id > 0:
+            self.mdone_pub.publish(Int32(data=marker_id))
+
+        self.last_completed_marker_id = marker_id
+        rospy.loginfo("[marker_ctrl] mission finished marker=%s | %s", str(marker_id), reason)
+
+        self.mode = self.MODE_IDLE
+        self.expected_marker_id = None
+        self.pre_backward_start_time = None
+        self.pre_backward_next_mode = self.MODE_IDLE
+        self.mode_pub.publish("IDLE")
+
+    def _turn_ang(self, err_positive, turn_speed=None):
+        ts = self.turn_speed if turn_speed is None else float(turn_speed)
+        left = (err_positive and self.left_if_pos) or \
+               ((not err_positive) and (not self.left_if_pos))
+        return +ts if left else -ts
+
+    def _turn_pwm(self, err_positive):
+        left = (err_positive and self.left_if_pos) or \
+               ((not err_positive) and (not self.left_if_pos))
+        if left:
+            return self.pwm_turn_left_l, self.pwm_turn_left_r
+        else:
+            return self.pwm_turn_right_l, self.pwm_turn_right_r
+
+    def _retreat_turn_pwm(self, err_positive):
+        left = (err_positive and self.left_if_pos) or \
+               ((not err_positive) and (not self.left_if_pos))
+        if left:
+            return self.pwm_retreat_turn_left_l, self.pwm_retreat_turn_left_r
+        else:
+            return self.pwm_retreat_turn_right_l, self.pwm_retreat_turn_right_r
+
+    def _yaw_turn_pwm(self, err_positive):
+        left = (err_positive and self.left_if_pos) or \
+               ((not err_positive) and (not self.left_if_pos))
+        if left:
+            return self.pwm_yaw_left_l, self.pwm_yaw_left_r
+        else:
+            return self.pwm_yaw_right_l, self.pwm_yaw_right_r
+
+    def drive_with_target_y(self, dist, pose_x, target_y, forward_motion=True, phase=""):
+        err = pose_x - target_y
+
+        if abs(err) <= self.angle_threshold:
+            if forward_motion:
+                if self.use_direct_pwm:
+                    self.publish_pwm(
+                        self.pwm_forward_l,
+                        self.pwm_forward_r,
+                        "%s forward dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f" %
+                        (phase, dist, pose_x, target_y, err)
+                    )
+                else:
+                    self.publish_twist(
+                        self.forward_speed,
+                        0.0,
+                        "%s forward dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f" %
+                        (phase, dist, pose_x, target_y, err)
+                    )
+            else:
+                if self.use_direct_pwm:
+                    self.publish_pwm(
+                        self.pwm_backward_l,
+                        self.pwm_backward_r,
+                        "%s backward dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f" %
+                        (phase, dist, pose_x, target_y, err)
+                    )
+                else:
+                    self.publish_twist(
+                        -self.backward_speed,
+                        0.0,
+                        "%s backward dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f" %
+                        (phase, dist, pose_x, target_y, err)
+                    )
+        else:
+            if self.use_direct_pwm:
+                if forward_motion:
+                    l, r = self._turn_pwm(err > 0.0)
+                    self.publish_pwm(
+                        l,
+                        r,
+                        "%s turn dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f" %
+                        (phase, dist, pose_x, target_y, err)
+                    )
+                else:
+                    l, r = self._retreat_turn_pwm(err > 0.0)
+                    self.publish_pwm(
+                        l,
+                        r,
+                        "%s retreat_turn dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f" %
+                        (phase, dist, pose_x, target_y, err)
+                    )
+            else:
+                if forward_motion:
+                    ang = self._turn_ang(err > 0.0)
+                    self.publish_twist(
+                        0.0,
+                        ang,
+                        "%s turn dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f ang=%.2f" %
+                        (phase, dist, pose_x, target_y, err, ang)
+                    )
+                else:
+                    ang = self._turn_ang(err > 0.0)
+                    self.publish_twist(
+                        -self.backward_speed,
+                        ang,
+                        "%s backward_turn dist=%.3f pose_x=%.3f target_y=%.3f err=%.3f ang=%.2f" %
+                        (phase, dist, pose_x, target_y, err, ang)
+                    )
+
+    def align_yaw_only(self, yaw, phase="YAW_ALIGN"):
+        err = yaw - self.target_yaw
+
+        if abs(err) <= self.yaw_threshold:
+            self.finish_mission(
+                "%s complete yaw=%.3f target=%.3f err=%.3f" %
+                (phase, yaw, self.target_yaw, err)
+            )
+            return
+
+        if self.use_direct_pwm:
+            l, r = self._yaw_turn_pwm(err > 0.0)
+            self.publish_pwm(
+                l,
+                r,
+                "%s turning yaw=%.3f target=%.3f err=%.3f threshold=%.3f" %
+                (phase, yaw, self.target_yaw, err, self.yaw_threshold)
+            )
+        else:
+            ang = self._turn_ang(err > 0.0, self.yaw_turn_speed)
+            self.publish_twist(
+                0.0,
+                ang,
+                "%s turning yaw=%.3f target=%.3f err=%.3f threshold=%.3f ang=%.2f" %
+                (phase, yaw, self.target_yaw, err, self.yaw_threshold, ang)
+            )
+
+    # =========================================================
+    # Main Control
+    # =========================================================
+    def run_control(self):
+        if self.mode == self.MODE_IDLE:
+            return
+
+        # -----------------------------------------------------
+        # PRE_BACKWARD
+        # APPROACH 시작 전에 마커 가시 여부와 관계없이 지정 시간 후진
+        # -----------------------------------------------------
+        if self.mode == self.MODE_PRE_BACKWARD:
+            if self.pre_backward_start_time is None:
+                self.pre_backward_start_time = time.time()
+
+            elapsed = time.time() - self.pre_backward_start_time
+
+            if elapsed < self.pre_backward_duration:
+                self.publish_pwm(
+                    self.pre_backward_l,
+                    self.pre_backward_r,
+                    "PRE_BACKWARD %.2f/%.2fs before APPROACH marker id=%s" %
+                    (elapsed, self.pre_backward_duration, str(self.expected_marker_id))
+                )
+                return
+
+            self.publish_stop("PRE_BACKWARD done -> APPROACH")
+            self.mode = self.pre_backward_next_mode
+            self.pre_backward_start_time = None
+            self.pre_backward_next_mode = self.MODE_IDLE
+            self.mode_pub.publish("APPROACH")
+            rospy.loginfo("[marker_ctrl] PRE_BACKWARD done -> APPROACH marker id=%s", str(self.expected_marker_id))
+            return
+
+        if not self.marker_visible_recently():
+            self.publish_stop("marker stale")
+            return
+
+        if not self.expected_marker_visible():
+            self.publish_stop(
+                "waiting expected marker id=%s, seen=%s" %
+                (str(self.expected_marker_id), str(self.current_marker_id))
+            )
+            return
+
+        pose_x = self.current_pose_x
+        dist = self.current_distance
+        yaw = self.current_yaw
+
+        # -----------------------------------------------------
+        # APPROACH
+        # 수정 조건:
+        #   dist > 1.85            -> pose_x = 0.0 기준
+        #   1.20 < dist <= 1.85    -> pose_x = -0.3 기준
+        #   0.85 < dist <= 1.20    -> pose_x = -0.1 기준
+        #   0.6 < dist <= 0.85     -> pose_x = 0.2 기준
+        #   dist <= 0.6            -> stop + yaw 정렬
+        # -----------------------------------------------------
+        if self.mode == self.MODE_APPROACH:
+            if dist > self.approach_stage1_dist:
+                self.drive_with_target_y(
+                    dist=dist,
+                    pose_x=pose_x,
+                    target_y=self.approach_target_y_far,
+                    forward_motion=True,
+                    phase="APPROACH_STAGE1_X0"
+                )
+                return
+
+            if dist > self.approach_stage1_5_dist:
+                self.drive_with_target_y(
+                    dist=dist,
+                    pose_x=pose_x,
+                    target_y=self.approach_target_y_mid,
+                    forward_motion=True,
+                    phase="APPROACH_STAGE2_X_NEG03"
+                )
+                return
+
+            if dist > self.approach_stage2_dist:
+                self.drive_with_target_y(
+                    dist=dist,
+                    pose_x=pose_x,
+                    target_y=self.approach_target_y_mid2,
+                    forward_motion=True,
+                    phase="APPROACH_STAGE3_X_NEG01"
+                )
+                return
+
+            if dist > self.approach_stop_dist:
+                self.drive_with_target_y(
+                    dist=dist,
+                    pose_x=pose_x,
+                    target_y=self.approach_target_y_near,
+                    forward_motion=True,
+                    phase="APPROACH_STAGE4_X_POS02"
+                )
+                return
+
+            self.publish_stop("APPROACH reached stop point dist=%.3f -> yaw align" % dist)
+
+            if not self.yaw_visible_recently():
+                rospy.logwarn("[marker_ctrl] yaw not updated recently, cannot align yaw")
+                return
+
+            self.align_yaw_only(yaw, phase="APPROACH_YAW_ALIGN")
+            return
+
+        # -----------------------------------------------------
+        # RETREAT 기존 로직 유지
+        # -----------------------------------------------------
+        if self.mode == self.MODE_RETREAT:
+            if dist < self.retreat_stage1_limit:
+                self.drive_with_target_y(
+                    dist=dist,
+                    pose_x=pose_x,
+                    target_y=self.retreat_target_y_close,
+                    forward_motion=False,
+                    phase="RETREAT_STAGE1"
+                )
+                return
+
+            if dist < self.retreat_finish_dist:
+                self.drive_with_target_y(
+                    dist=dist,
+                    pose_x=pose_x,
+                    target_y=self.retreat_target_y_far,
+                    forward_motion=False,
+                    phase="RETREAT_STAGE2"
+                )
+                return
+
+            self.finish_mission("RETREAT reached finish distance dist=%.3f" % dist)
+            return
+
+
+if __name__ == '__main__':
+    try:
+        MarkerPoseControllerGradDemo()
+    except rospy.ROSInterruptException:
+        pass
