@@ -10,9 +10,11 @@ rosrun my_robot_odom system_sequence.py
 
 event 번호 확인 
 ls -l /dev/input/by-id/ | grep -i logitech event 
+
 번호 확인후 odom_imu_grad_demo.py event 번호 수정
 
-usb cam ls /dev/video*
+usb cam 
+ls /dev/video*
 
 ===========================================================
 
