@@ -1,6 +1,9 @@
 roslaunch my_arm_bringup arm_total_delay_fixed.launch
+
 roslaunch ydlidar_ros_driver lidar.launch
+
 roslaunch my_nav grad_demo.launch record:=false
+
 rosrun my_robot_odom system_sequence.py
 
 ===========================================================
