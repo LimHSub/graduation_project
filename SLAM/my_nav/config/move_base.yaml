@@ -1,0 +1,102 @@
+TebLocalPlannerROS:
+
+  # ======== 기본 설정 ========
+  odom_topic: odometry/filtered
+  map_frame: map
+
+  # ======== 로봇 사양 ========
+  # 선속도 대비 각속도를 낮춰 지그재그 현상 방지
+  max_vel_x: 0.22
+  max_vel_x_backwards: 0.1
+  max_vel_theta: 0.22   # max_vel_x와 비슷하거나 낮게
+
+  acc_lim_x: 0.5
+  acc_lim_theta: 0.18
+
+  # 차동 구동 로봇 → 0.0
+  min_turning_radius: 0.0
+
+  # ======== 로봇 footprint ========
+  footprint_model:
+    type: "polygon"
+    vertices: [[0.145, 0.255], [0.145, -0.255], [-0.495, -0.255], [-0.495, 0.255]]
+
+  # ======== 궤적 설정 (Trajectory) ========
+  teb_autosize: true
+
+  dt_ref: 0.4                # 0.3 ~ 0.6 권장
+  dt_hysteresis: 0.1
+
+  global_plan_prune_distance: 2.0
+  max_global_plan_lookahead_dist: 6.0
+
+  shrink_horizon_backup: true
+  shrink_horizon_min_duration: 15.0
+
+  exact_arc_length: true
+  global_plan_overwrite_orientation: true
+
+  feasibility_check_no_poses: 4
+  global_plan_viapoint_sep: 0.3
+
+  # ======== 목표점 도달 허용 오차 ========
+  xy_goal_tolerance: 0.3
+  yaw_goal_tolerance: 0.2   # 약 11.4도
+  free_goal_vel: false
+
+  # ======== 장애물 설정 ========
+  min_obstacle_dist: 0.35 #0.30(0427)
+  inflation_dist: 0.75 #0.55(0427)
+
+  include_costmap_obstacles: true
+  costmap_obstacles_behind_robot_dist: 0.5
+
+  obstacle_poses_affected: 20
+
+  # ======== 최적화 가중치 ========
+  optimization_activate: true
+
+  no_inner_iterations: 5
+  no_outer_iterations: 4
+
+  weight_optimaltime: 1.0
+
+  # 기구학
+  weight_kinematics_nh: 1000.0
+  weight_kinematics_forward_drive: 400.0
+
+  # 경로 특성
+  weight_shortest_path: 0.5
+  weight_viapoint: 30.0
+
+  # 장애물
+  weight_obstacle: 80.0 #50.0
+  weight_inflation: 20.0
+
+  # 속도/가속도 제약
+  weight_max_vel_x: 2.0
+  weight_max_vel_theta: 1.0
+  weight_acc_lim_x: 1.0
+  weight_acc_lim_theta: 1.0
+
+  # 사용 안함
+  weight_kinematics_turning_radius: 0.0
+
+  # ======== Homotopy Planning ========
+  enable_homotopy_class_planning: false
+  enable_multithreading: true
+  max_number_classes: 4
+
+
+GlobalPlanner:
+
+  allow_unknown: false
+  default_tolerance: 0.2
+
+  use_quadratic: true
+  use_dijkstra: true
+  use_grid_path: false
+
+  lethal_cost: 253
+  neutral_cost: 65
+  cost_factor: 10.0

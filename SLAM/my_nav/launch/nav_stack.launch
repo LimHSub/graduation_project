@@ -1,0 +1,115 @@
+<launch>
+  <!-- ================================================================ -->
+  <!-- 공통 인자 -->
+  <!-- ================================================================ -->
+  <arg name="map_file" default="/home/limhs/catkin_ws/src/my_map/map_1F.yaml"/>
+  <arg name="record" default="false"/>
+  <arg name="use_prohibition" default="false"/>
+
+  <!-- ================================================================ -->
+  <!-- 1) map_server -->
+  <!-- ================================================================ -->
+  <node pkg="map_server" type="map_server" name="map_server"
+        args="$(arg map_file)" output="screen" />
+
+  <!-- ================================================================ -->
+  <!-- 2) AMCL -->
+  <!-- ================================================================ -->
+  <node pkg="amcl_custom" type="amcl_custom" name="amcl" output="screen"
+        launch-prefix="bash -c 'sleep 2; $0 $@'">
+    <param name="odom_frame_id" value="odom" />
+    <param name="base_frame_id" value="base_link" />
+    <param name="scan_topic" value="/scan_filtered" />
+
+    <param name="min_particles" value="800" />
+    <param name="max_particles" value="6000" />
+
+    <param name="laser_max_beams" value="60" />
+    <param name="laser_max_range" value="16.0" />
+    <param name="laser_min_range" value="0.1" />
+
+    <param name="odom_alpha1" value="0.05" />
+    <param name="odom_alpha2" value="0.05" />
+    <param name="odom_alpha3" value="0.1" />
+    <param name="odom_alpha4" value="0.1" />
+
+    <param name="laser_z_hit" value="0.7" />
+    <param name="laser_sigma_hit" value="0.2" />
+    <param name="laser_z_rand" value="0.05" />
+
+    <param name="transform_tolerance" value="1.0" />
+    <param name="update_min_d" value="0.03" />
+    <param name="update_min_a" value="0.03" />
+    <param name="resample_interval" value="2" />
+    <param name="recovery_alpha_slow" value="0.0" />
+    <param name="recovery_alpha_fast" value="0.0" />
+  </node>
+
+  <!-- ================================================================ -->
+  <!-- 3) 일반 주행 모드 -->
+  <!-- ================================================================ -->
+  <group unless="$(arg record)">
+    <!-- <include file="$(find amr_re_description)/launch/display.launch"/> -->
+
+    <node pkg="move_base" type="move_base" name="move_base" output="screen"
+          launch-prefix="bash -c 'sleep 4; $0 $@'">
+      <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
+
+      <rosparam file="$(find my_nav)/config/costmap.yaml" command="load" ns="" />
+      <rosparam file="$(find my_nav)/config/move_base.yaml" command="load" />
+      <!-- B맵 -->
+      <rosparam if="$(arg use_prohibition)" file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="global_costmap/prohibition_layer"/>
+      <rosparam if="$(arg use_prohibition)" file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="local_costmap/prohibition_layer"/>
+
+      <param if="$(arg use_prohibition)" name="global_costmap/prohibition_layer/enabled" value="true" />
+      <param if="$(arg use_prohibition)" name="local_costmap/prohibition_layer/enabled" value="true" />
+
+<!-- A맵 -->
+      <rosparam unless="$(arg use_prohibition)" param="global_costmap/prohibition_layer/prohibition_areas">[]</rosparam>
+      <rosparam unless="$(arg use_prohibition)" param="local_costmap/prohibition_layer/prohibition_areas">[]</rosparam>
+
+      <param unless="$(arg use_prohibition)" name="global_costmap/prohibition_layer/enabled" value="false" />
+      <param unless="$(arg use_prohibition)" name="local_costmap/prohibition_layer/enabled" value="false" />
+
+      <param name="planner_frequency" value="1.0" />
+      <param name="controller_frequency" value="10.0" />
+
+      <param name="global_costmap/transform_tolerance" value="2.0" />
+      <param name="local_costmap/transform_tolerance" value="2.0" />
+
+      <!-- 새 map_server를 매번 다시 띄우므로 false 유지 -->
+      <param name="global_costmap/static_layer/first_map_only" value="false" />
+
+      <remap from="/cmd_vel" to="/cmd_vel_nav"/>
+    </node>
+  </group>
+
+  <!-- ================================================================ -->
+  <!-- 4) 기록 모드 -->
+  <!-- ================================================================ -->
+  <group if="$(arg record)">
+    <!-- <include file="$(find amr_re_description)/launch/display.launch"/> -->
+
+    <node pkg="move_base" type="move_base" name="move_base" output="screen">
+      <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
+
+      <rosparam file="$(find my_nav)/config/costmap.yaml" command="load" ns="" />
+      <rosparam file="$(find my_nav)/config/move_base.yaml" command="load" />
+      <rosparam if="$(arg use_prohibition)" file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="global_costmap/prohibition_layer"/>
+      <rosparam if="$(arg use_prohibition)" file="$(find my_nav)/config/prohibition_layer.yaml" command="load" ns="local_costmap/prohibition_layer"/>
+
+      <param if="$(arg use_prohibition)" name="global_costmap/prohibition_layer/enabled" value="true" />
+      <param if="$(arg use_prohibition)" name="local_costmap/prohibition_layer/enabled" value="true" />
+
+      <param name="controller_frequency" value="5.0" />
+      <param name="global_costmap/transform_tolerance" value="2.0" />
+      <param name="local_costmap/transform_tolerance" value="2.0" />
+      <param name="global_costmap/static_layer/first_map_only" value="false" />
+
+      <remap from="/move_base_simple/goal" to="/move_base_simple/goal_live"/>
+      <remap from="/cmd_vel" to="/cmd_vel_nav"/>
+    </node>
+  </group>
+</launch>

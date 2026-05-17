@@ -1,0 +1,16 @@
+frame_id: map
+waypoints:
+- name: p1
+  x: -1.155
+  y: -20.286
+  yaw_deg: 179.8
+  slow_zone: false
+  aruco_on: false
+  wait_key: false
+- name: p2
+  x: 8.094
+  y: -12.391
+  yaw_deg: 1.8
+  slow_zone: false
+  aruco_on: false
+  wait_key: false

@@ -1,0 +1,88 @@
+TebLocalPlannerROS:
+    # ======== 기본 설정 ========
+    odom_topic: odometry/filtered
+    map_frame: map
+
+    # ======== 로봇 사양 (안정성을 위해 보수적으로 설정) ========
+    # 선속도 대비 각속도를 낮춰 지그재그 현상 방지
+    max_vel_x: 0.3
+    max_vel_x_backwards: 0.1
+    max_vel_theta: 0.6   # max_vel_x에 비해 너무 크지 않게 설정하는 것
+    acc_lim_x: 0.5
+    acc_lim_theta: 0.8
+
+    # 차동 구동 로봇의 경우 0.0, Ackerman 방식의 경우 실제 최소 회전 반경 입력
+    min_turning_radius: 0.0
+
+    # 로봇의 실제 발자국(footprint) 설정
+    footprint_model:
+      type: "polygon"
+      vertices: [[0.320, 0.255], [0.320, -0.255], [-0.320, -0.255], [-0.320, 0.255]]
+
+    # ======== 궤적 설정 (Trajectory) ========
+    teb_autosize: true
+    dt_ref: 0.4
+    global_plan_prune_distance: 2.0
+    shrink_horizon_backup: true
+    shrink_horizon_min_duration: 15.0
+    exact_arc_length: true
+    dt_hysteresis: 0.1
+    global_plan_overwrite_orientation: true
+    max_global_plan_lookahead_dist: 6.0
+    feasibility_check_no_poses: 4
+    global_plan_viapoint_sep: 0.3
+
+    # ======== 목표점 도달 허용 오차 (Goal Tolerance) ========
+    xy_goal_tolerance: 0.2
+    yaw_goal_tolerance: 0.15
+    free_goal_vel: false
+
+    # ======== 장애물 설정 (Obstacles) ========
+    min_obstacle_dist: 0.35
+    inflation_dist: 0.50
+    include_costmap_obstacles: true
+    costmap_obstacles_behind_robot_dist: 0.5
+    obstacle_poses_affected: 20
+
+    # ======== 최적화 가중치 (Weights) ========
+    optimization_activate: true
+    no_inner_iterations: 5
+    no_outer_iterations: 4
+
+    weight_optimaltime: 5.0
+    weight_kinematics_nh: 1000.0
+    weight_kinematics_forward_drive: 700.0
+    # penalty_epsilon: 0.2
+
+    weight_shortest_path: 0.5
+    weight_obstacle: 10
+
+    weight_max_vel_x: 2.0
+    weight_max_vel_theta: 1.0
+    weight_acc_lim_x: 1.0
+    weight_acc_lim_theta: 1.0
+
+    weight_kinematics_turning_radius: 0.0
+    weight_viapoint: 20.0
+
+    # ======== 고급 장애물 회피 (Homotopy Class Planning) ========
+    enable_homotopy_class_planning: false
+    enable_multithreading: true
+    max_number_classes: 4
+    include_dynamic_obstacles: true
+    dynamic_obstacle_inflation_dist: 0.25
+    weight_dynamic_obstacle: 20.0
+    weight_dynamic_obstacle_inflation: 15.0
+    costmap_converter_plugin: "costmap_converter::CostmapToDynamicObstacles"
+    costmap_converter_spin_thread: true
+    costmap_converter_rate: 5.0
+
+GlobalPlanner:
+    allow_unknown: false
+    default_tolerance: 0.2
+    use_quadratic: true
+    use_dijkstra: true
+    use_grid_path: false
+    lethal_cost: 253
+    neutral_cost: 65
+    cost_factor: 10.0

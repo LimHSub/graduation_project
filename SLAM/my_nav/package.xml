@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>my_nav</name>
+  <version>0.0.0</version>
+  <description>The my_nav package</description>
+
+  <maintainer email="limhs@todo.todo">limhs</maintainer>
+  <license>TODO</license>
+
+  <!-- build tool -->
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- 기존 의존성 -->
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>tf</depend>
+
+  <!-- 🔥 추가 (이거 한 줄이면 충분) -->
+  <depend>move_base_msgs</depend>
+
+  <export>
+  </export>
+</package>

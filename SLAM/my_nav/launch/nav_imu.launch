@@ -1,0 +1,70 @@
+<launch>
+  <!-- 1. 라이다 필터 -->
+  <node pkg="laser_filters" type="scan_to_scan_filter_chain" name="scan_filter" output="screen">
+    <rosparam command="load" file="$(find my_nav)/config/laser_filter.yaml" />
+    <remap from="scan" to="/scan" />
+    <remap from="scan_filtered" to="/scan_filtered" />
+  </node>
+
+  <!-- 2. base_link → laser_frame (base_footprint 제거, 실제 센서 위치로 수정) -->
+  <node pkg="tf" type="static_transform_publisher" name="base_link_to_laser"
+        args="0.17 0 0.28 0 0 3.141592 base_link laser_frame 100" />
+
+  <!-- 3. base_link → imu_link (IMU 위치/방향, 실제 장착 위치로 수정) -->
+  <node pkg="tf" type="static_transform_publisher" name="base_link_to_imu"
+        args="0 0 0.24 0 0 0 base_link imu_link 100" />
+
+  <!-- 4. map server -->
+  <node pkg="map_server" type="map_server" name="map_server"
+        args="/home/limhs/catkin_ws/src/my_map/map.yaml" />
+
+  <!-- 5. 오도메트리+IMU 통합 노드 -->
+  <node pkg="my_robot_odom" type="odom_imu.py" name="odom_imu" output="screen"/>
+
+  <!-- 6. EKF (robot_localization) -->
+  <node pkg="robot_localization" type="ekf_localization_node" name="ekf_se_odom" output="screen" respawn="true">
+    <rosparam command="load" file="$(find my_nav)/config/ekf.yaml" />
+  </node>
+
+  <!-- 7. AMCL (scan_topic을 꼭 /scan_filtered로!) -->
+  <node pkg="amcl_custom" type="amcl_custom" name="amcl" output="screen">
+  <!--<node pkg="amcl" type="amcl" name="amcl" output="screen">-->
+    <param name="odom_frame_id" value="odom" />
+    <param name="base_frame_id" value="base_link" />
+    <param name="scan_topic" value="/scan_filtered" />
+    <param name="min_particles" value="4000" />
+    <param name="max_particles" value="8000" />
+    <param name="laser_max_beams" value="60" />  <!-- 라이다 중에 몇개를 샘플링 할건지 -->
+    <param name="laser_max_range" value="16.0" /> <!-- 라이다 최대거리 -->
+    <param name="laser_min_range" value="0.1" />
+    <param name="odom_alpha1" value="0.01" />     <!-- 회전 중 회전 노이즈 -->
+    <param name="odom_alpha2" value="0.01" />     <!-- 직진 중 회전 -->
+    <param name="odom_alpha3" value="0.3" />     <!-- 회전 중 직진 -->
+    <param name="odom_alpha4" value="0.5" />     <!-- 직진 중 직진 -->
+    <param name="laser_z_hit" value="0.7" />     <!-- 일치할 확률 비율 / 맵과 일치하는 beam의 영향력/ 클수록 영향력이 커짐 -->
+    <param name="laser_sigma_hit" value="0.2" />  <!-- 일치 오차 분산 /맵과 일치하는 beam의 영향력/ 작아지면 weight 급감 -->
+    <param name="laser_z_rand" value="0.05" />    <!-- 랜덤 오류 비율/커지면 노이즈 대응 강화, localization이 흐려질 수 있음 -->
+    <param name="transform_tolerance" value="1.0" /> <!-- tf가 늦게 들어와도 기다릴 수 있는 시간 -->
+    <param name="update_min_d" value="0.3" />   <!-- 로봇이 얼마만큼 움직였을때 laser update를 수행할지 -->
+    <param name="update_min_a" value="0.3" />
+    <param name="resample_interval" value="2" />
+    <param name="recovery_alpha_slow" value="0.001" />  <!-- 커스텀 -->
+    <param name="recovery_alpha_fast" value="0.1" />    <!-- 커스텀 -->
+  </node>
+
+  <!-- 8. Move Base -->
+  <node pkg="move_base" type="move_base" name="move_base" output="screen">
+    <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+    
+    <!-- <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS"/> -->
+    
+    <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS"/>
+    <rosparam file="$(find my_nav)/config/costmap.yaml" command="load" ns="" />
+    <rosparam file="$(find my_nav)/config/move_base.yaml" command="load" ns="TrajectoryPlannerROS" />
+    <rosparam file="$(find my_nav)/config/move_base.yaml" command="load" ns="TebLocalPlannerROS" />
+    <rosparam file="$(find my_nav)/config/move_base.yaml" command="load" />
+    <param name="controller_frequency" value="2.0" />
+    <param name="global_costmap/transform_tolerance" value="0.5" />
+    <param name="local_costmap/transform_tolerance" value="0.5" />
+  </node>
+</launch>
