@@ -1,0 +1,246 @@
+<?xml version="1.0" ?>
+<robot name="amr_re" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find amr_re_description)/urdf/materials.xacro" />
+<xacro:include filename="$(find amr_re_description)/urdf/amr_re.trans" />
+<xacro:include filename="$(find amr_re_description)/urdf/amr_re.gazebo" />
+<link name="base_link">
+  <inertial>
+    <origin xyz="-0.180952635719906 3.0531162293977174e-16 0.3344758064516138" rpy="0 0 0"/>
+    <mass value="89.79614999999988"/>
+    <inertia ixx="7.400603" iyy="8.91775" izz="8.515942" ixy="-0.0" iyz="0.0" ixz="-0.118779"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk_1_1">
+  <inertial>
+    <origin xyz="-0.10137604873242642 0.008696866548616428 -0.04583879811973288" rpy="0 0 0"/>
+    <mass value="3.9239093994786898"/>
+    <inertia ixx="0.007141" iyy="0.015707" izz="0.010756" ixy="-0.000145" iyz="-0.001013" ixz="0.000996"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.1152 0.185 -0.09625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/brk_1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.1152 0.185 -0.09625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/brk_1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="J1_1">
+  <inertial>
+    <origin xyz="-0.09512786372049682 -0.045419130179215145 -0.03673477444793122" rpy="0 0 0"/>
+    <mass value="9.835943753349952"/>
+    <inertia ixx="0.016014" iyy="0.030971" izz="0.034222" ixy="-0.005332" iyz="1e-06" ixz="9e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.03695 -0.185 -0.04277" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/J1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.03695 -0.185 -0.04277" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/J1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="J2_1">
+  <inertial>
+    <origin xyz="-0.09512786372049742 0.04541913017921334 -0.036804330795470006" rpy="0 0 0"/>
+    <mass value="9.835943753349952"/>
+    <inertia ixx="0.016014" iyy="0.030971" izz="0.034222" ixy="0.005332" iyz="1e-06" ixz="-9e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.03695 0.185 -0.04277" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/J2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.03695 0.185 -0.04277" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/J2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel2_1">
+  <inertial>
+    <origin xyz="3.7821838974738263e-07 0.03135914039417864 -5.361727511913293e-06" rpy="0 0 0"/>
+    <mass value="7.704146529141015"/>
+    <inertia ixx="0.020899" iyy="0.039488" izz="0.020899" ixy="0.0" iyz="-1e-06" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.00018 -0.20305 -0.006" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/wheel2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.00018 -0.20305 -0.006" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/wheel2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wheel1_1">
+  <inertial>
+    <origin xyz="3.7821839041687747e-07 -0.03135914039417925 6.2564841108569275e-06" rpy="0 0 0"/>
+    <mass value="7.704146529141015"/>
+    <inertia ixx="0.020899" iyy="0.039488" izz="0.020899" ixy="-0.0" iyz="-1e-06" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.00018 0.20305 -0.006" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/wheel1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.00018 0.20305 -0.006" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/wheel1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="caster2_1">
+  <inertial>
+    <origin xyz="-0.06271987827952474 0.012999546769944387 -0.07846980667472041" rpy="0 0 0"/>
+    <mass value="4.029477467498696"/>
+    <inertia ixx="0.006976" iyy="0.0109" izz="0.005349" ixy="-0.0" iyz="-0.0" ixz="-0.001674"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.4198 0.22 -0.06625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/caster2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.4198 0.22 -0.06625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/caster2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="caster1_1">
+  <inertial>
+    <origin xyz="-0.06271987827952352 -0.013000453230055442 -0.07846980667472167" rpy="0 0 0"/>
+    <mass value="4.029477467498695"/>
+    <inertia ixx="0.006976" iyy="0.0109" izz="0.005349" ixy="-0.0" iyz="-0.0" ixz="-0.001674"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.4198 -0.22 -0.06625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/caster1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.4198 -0.22 -0.06625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/caster1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="brk_2_1">
+  <inertial>
+    <origin xyz="-0.10137604868812619 -0.008696866474629555 -0.04583879863387563" rpy="0 0 0"/>
+    <mass value="3.923909351517027"/>
+    <inertia ixx="0.007141" iyy="0.015707" izz="0.010756" ixy="0.000145" iyz="0.001013" ixz="0.000996"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.1152 -0.185 -0.09625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/brk_2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.1152 -0.185 -0.09625" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="package://amr_re_description/meshes/brk_2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="Rigid 1" type="fixed">
+  <origin xyz="0.1152 -0.185 0.09625" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="brk_1_1"/>
+</joint>
+
+<joint name="Rigid 4" type="fixed">
+  <origin xyz="-0.07825 0.0 -0.05348" rpy="0 0 0"/>
+  <parent link="brk_2_1"/>
+  <child link="J1_1"/>
+</joint>
+
+<joint name="Rigid 5" type="fixed">
+  <origin xyz="-0.07825 0.0 -0.05348" rpy="0 0 0"/>
+  <parent link="brk_1_1"/>
+  <child link="J2_1"/>
+</joint>
+
+<joint name="Revolute 6" type="continuous">
+  <origin xyz="-0.03677 0.01805 -0.03677" rpy="0 0 0"/>
+  <parent link="J1_1"/>
+  <child link="wheel2_1"/>
+  <axis xyz="0.0 -1.0 -0.0"/>
+</joint>
+
+<joint name="Revolute 7" type="continuous">
+  <origin xyz="-0.03677 -0.01805 -0.03677" rpy="0 0 0"/>
+  <parent link="J2_1"/>
+  <child link="wheel1_1"/>
+  <axis xyz="-0.0 1.0 -0.0"/>
+</joint>
+
+<joint name="Rigid 10" type="fixed">
+  <origin xyz="-0.4198 -0.22 0.06625" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="caster2_1"/>
+</joint>
+
+<joint name="Rigid 11" type="fixed">
+  <origin xyz="-0.4198 0.22 0.06625" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="caster1_1"/>
+</joint>
+
+<joint name="Rigid 12" type="fixed">
+  <origin xyz="0.1152 0.185 0.09625" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="brk_2_1"/>
+</joint>
+
+</robot>

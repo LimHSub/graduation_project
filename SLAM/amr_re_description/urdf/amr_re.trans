@@ -1,0 +1,29 @@
+<?xml version="1.0" ?>
+<robot name="amr_re" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="prefix" default=""/>
+  <xacro:property name="prefix" value="$(arg prefix)"/>
+
+  <transmission name="${prefix}Revolute_6_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="${prefix}Revolute_6">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="${prefix}Revolute_6_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+  <transmission name="${prefix}Revolute_7_tran">
+    <type>transmission_interface/SimpleTransmission</type>
+    <joint name="${prefix}Revolute_7">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+    </joint>
+    <actuator name="${prefix}Revolute_7_actr">
+      <hardwareInterface>hardware_interface/EffortJointInterface</hardwareInterface>
+      <mechanicalReduction>1</mechanicalReduction>
+    </actuator>
+  </transmission>
+
+</robot>
