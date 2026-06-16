@@ -30,6 +30,7 @@ ls /dev/video*
 
 포트 번호 수정
 파일에 있는 ACM0, ACM1 등을 보드 및 센서 by-id 고정 경로로 변경(어느 파일인지는 임형섭에게 물어보기)
+
 STM32:
 /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_0668FF565087534867135942-if02
 
