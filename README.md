@@ -34,20 +34,32 @@ ls /dev/video*
 STM32:
 /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_0668FF565087534867135942-if02
 
+/home/park/catkin_ws/src/my_robot_odom/scripts/odom_imu_grad_demo.py
+
 OpenCR:
-/dev/serial/by-id/usb-ROBOTIS_OpenCR_Virtual_ComPort_in_FS_Mode_FFFFFFFEFFFF-if00
+/dev/serial/by-id/usb-ROBOTIS_OpenCR_Virtual_ComPort_in_FS_Mode_FFFFFFFEFFFF-if00\
+
+/home/park/catkin_ws/src/my_arm_bringup/launch/bringup.launch
 
 OpenRB:
 /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_E2A54C7C50304A46462E3120FF061C2B-if00
 
+/home/park/catkin_ws/src/my_arm_bringup/launch/delivery_app_bridge.launch
+
 LiDAR:
 /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0
+
+/home/park/catkin_ws/src/ydlidar_ros_driver/launch
 
 Logitech C922 Webcam:
 /dev/v4l/by-id/usb-046d_C922_Pro_Stream_Webcam_882E697F-video-index0
 
+/home/park/catkin_ws/src/my_nav/launch/grad_demo.launch
+
 Gamepad F710:
 /dev/input/by-id/usb-Logitech_Wireless_Gamepad_F710_46789A23-event-joystick
+
+/home/park/catkin_ws/src/my_robot_odom/scripts/odom_imu_grad_demo.py
 
 뎁스카메라는 수정 안함
 
