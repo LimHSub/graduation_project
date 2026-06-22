@@ -48,3 +48,7 @@ Logitech C922 Webcam:
 
 Gamepad F710:
 /dev/input/by-id/usb-Logitech_Wireless_Gamepad_F710_46789A23-event-joystick
+
+뎁스카메라는 수정 안함
+
+====================================================================
