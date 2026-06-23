@@ -7,6 +7,23 @@ roslaunch my_nav grad_demo.launch record:=false
 rosrun my_robot_odom system_sequence.py
 
 ===========================================================
+rosservice call /waypoint_navigator/goto "index: 0"  # 1층 Lidar 주행
+
+rosservice call /waypoint_navigator/marker_start_1   # 엘리베이터 접근(D435)
+
+rosservice call /arm_mission/panel   # 패널 버튼 누르기
+
+rosservice call /waypoint_navigator/marker_start_2   # 아루코마커 전진(로지텍)
+
+rosservice call /arm_mission/button   # 엘레베이터 버튼 누르기
+
+rosservice call /waypoint_navigator/marker_start_3   # 아루코마커 후진(로지텍)
+
+rosservice call /waypoint_navigator/switch_next_map  # 맵 전환
+
+rosservice call /waypoint_navigator/goto "index: 1"  # 3층 Lidar 주행
+
+===========================================================
 
 event 번호 확인 
 
