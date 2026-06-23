@@ -7,6 +7,7 @@ roslaunch my_nav grad_demo.launch record:=false
 rosrun my_robot_odom system_sequence.py
 
 ===========================================================
+
 rosservice call /waypoint_navigator/goto "index: 0"  # 1층 Lidar 주행
 
 rosservice call /waypoint_navigator/marker_start_1   # 엘리베이터 접근(D435)
