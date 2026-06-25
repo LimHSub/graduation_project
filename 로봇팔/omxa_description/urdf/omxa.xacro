@@ -505,7 +505,7 @@
 <joint name="camera_mount_joint" type="fixed">
   <parent link="brk8_1"/>
   <child link="camera_link"/>
-  <origin xyz="0.0115 0.03045 0.0458" rpy="0 0 0"/>
+  <origin xyz="-0.03266 0.02736 0.0458" rpy="0 0 0"/>
 </joint>
 
 <link name="camera_color_optical_frame"/>
