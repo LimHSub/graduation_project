@@ -42,7 +42,7 @@ global_costmap:
       max_obstacle_height: 2.0
 
   inflation_layer:
-    inflation_radius: 0.55
+    inflation_radius: 0.50
     cost_scaling_factor: 5.0
 
 
