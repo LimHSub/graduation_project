@@ -28,17 +28,6 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def normalize_label_text(s):
-    """
-    YOLO class name / command label 비교용 정규화.
-    공백, 개행, 따옴표, 숨은 문자 등이 섞여도 F3 == f3 == " F3 "로 비교되게 한다.
-    """
-    s = str(s)
-    s = s.replace("\n", "").replace("\r", "").replace("\t", "")
-    s = s.strip().upper()
-    return "".join(ch for ch in s if ch.isalnum())
-
-
 class YoloObjectTFDetector:
     def __init__(self):
         rospy.init_node("yolo_object_tf_detector", anonymous=False)
@@ -48,7 +37,7 @@ class YoloObjectTFDetector:
         self.pressed_model_path = rospy.get_param("~pressed_model_path", "/home/inwoong/catkin_ws/best2.pt")
 
         self.target_class = rospy.get_param("~target_class", "")
-        self.detect_conf_thresh = float(rospy.get_param("~detect_conf_thresh", 0.25))
+        self.detect_conf_thresh = float(rospy.get_param("~detect_conf_thresh", 0.5))
         self.detect_iou_thresh = float(rospy.get_param("~detect_iou_thresh", 0.45))
         self.classify_imgsz = int(rospy.get_param("~classify_imgsz", 224))
 
@@ -89,7 +78,7 @@ class YoloObjectTFDetector:
 
         self.target_offset_x = float(rospy.get_param("~target_offset_x", 0.005))
         self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.02))
-        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.03))
+        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.0))
 
         # current monitor
         self.current_topic = "/arm/joint_current_raw"
@@ -126,15 +115,15 @@ class YoloObjectTFDetector:
         }
 
         # fk compare / stabilization
-        self.settle_initial_wait = 1.0
-        self.settle_num_samples = 3
-        self.settle_sample_interval = 0.03
-        self.use_median_joint_sampling = True
+        self.settle_initial_wait = 0.6	# FK 비교/보정 전 joint 안정화 대기
+        self.settle_num_samples = 5		# 샘플링 수
+        self.settle_sample_interval = 0.03	# 샘플링 사이 대기 시간
+        self.use_median_joint_sampling = True	
 
         self.level_roll_ref = -0.088
         self.comp_q2_span = 0.30
         self.comp_q3_span = 0.30
-        self.comp_step = 0.02
+        self.comp_step = 0.03
         self.comp_pos_weight = 40.0
         self.comp_roll_weight = 1.0
         self.comp_z_drop_weight = 60.0
@@ -362,11 +351,10 @@ class YoloObjectTFDetector:
             rospy.logwarn_throttle(1.0, "Pressed classification failed: %s", str(e))
             return "unknown", 0.0
 
-    def update_detected_target(self, label, bx, by, bz, cam_x, cam_y, cam_z, conf, stamp, pressed_label="unknown", pressed_conf=0.0):
+    def update_detected_target(self, label, bx, by, bz, conf, stamp, pressed_label="unknown", pressed_conf=0.0):
         key = str(label).strip().upper()
         self.detected_targets[key] = {
             "x": float(bx), "y": float(by), "z": float(bz),
-            "cam_x": float(cam_x), "cam_y": float(cam_y), "cam_z": float(cam_z),
             "conf": float(conf), "stamp": stamp,
             "pressed_label": str(pressed_label), "pressed_conf": float(pressed_conf)
         }
@@ -375,6 +363,35 @@ class YoloObjectTFDetector:
         for k in list(self.detected_targets.keys()):
             if (now - self.detected_targets[k]["stamp"]).to_sec() > self.target_timeout:
                 del self.detected_targets[k]
+    
+    def estimate_f3_from_f2_f4(self):
+    
+    #F3가 직접 검출되지 않았을 때, F2와 F4의 base_link 좌표 중간값으로 F3 위치를 추정한다.
+        if "F2" not in self.detected_targets or "F4" not in self.detected_targets:
+            return None
+
+        f2 = self.detected_targets["F2"]
+        f4 = self.detected_targets["F4"]
+
+        estimated = {
+            "x": (f2["x"] + f4["x"]) / 2.0,
+            "y": (f2["y"] + f4["y"]) / 2.0,
+            "z": (f2["z"] + f4["z"]) / 2.0,
+            "conf": min(f2["conf"], f4["conf"]),
+            "stamp": rospy.Time.now(),
+            "pressed_label": "estimated",
+            "pressed_conf": 0.0
+        }
+
+        rospy.logwarn_throttle(
+            0.5,
+            "[fallback] F3 not detected. Estimated F3 from F2/F4: "
+            "x=%.3f y=%.3f z=%.3f | F2_conf=%.2f F4_conf=%.2f",
+            estimated["x"], estimated["y"], estimated["z"],
+            f2["conf"], f4["conf"]
+        )
+
+        return estimated
 
     def print_detected_targets_log(self):
         if not self.detected_targets:
@@ -387,25 +404,14 @@ class YoloObjectTFDetector:
 
     def detect_button_state_once(self, target_label):
         """
-        현재 color image 한 프레임에서 target_label의 ON/OFF 상태를 확인한다.
+        현재 color image 한 프레임에서 target_label의 ON/OFF 상태만 확인한다.
         push 이후 이벤트 판단용이며, depth/TF/MoveIt 동작은 수행하지 않는다.
-
-        추가 기능:
-          - button_state 확인 중에도 OpenCV 시각화 화면을 계속 갱신한다.
-          - 현재 프레임에서 검출된 모든 라벨/ confidence를 로그로 출력한다.
-          - 라벨 문자열을 정규화해서 F3가 검출됐는데도 비교 실패하는 문제를 방지한다.
         """
         if self.latest_color_image is None:
-            rospy.logwarn_throttle(0.5, "[button_state] latest_color_image is None")
             return None, 0.0
-
-        target_key_raw = str(target_label)
-        target_key = normalize_label_text(target_key_raw)
 
         try:
             color_image = self.latest_color_image.copy()
-            dbg = color_image.copy()
-
             detect_result = self.detect_model.predict(
                 source=color_image,
                 conf=self.detect_conf_thresh,
@@ -413,126 +419,26 @@ class YoloObjectTFDetector:
                 verbose=False
             )[0]
 
-            detected_labels = []
+            if detect_result is None or detect_result.boxes is None or len(detect_result.boxes) <= 0:
+                return None, 0.0
+
+            target_key = str(target_label).strip().upper()
             best_state = None
             best_conf = 0.0
-            best_det_conf = 0.0
-
-            if detect_result is None or detect_result.boxes is None or len(detect_result.boxes) <= 0:
-                cv2.putText(
-                    dbg,
-                    "button_state: NO DETECTION BOXES",
-                    (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2
-                )
-                rospy.logwarn_throttle(0.5, "[button_state] no detection boxes. target=%s", target_key)
-
-                if self.view_image:
-                    cv2.imshow("YOLO Detect + PressedClassifier + MoveIt", dbg)
-                    cv2.waitKey(1)
-
-                return None, 0.0
 
             names = detect_result.names
-
             for box in detect_result.boxes:
                 cls_id = int(box.cls[0].item())
-                raw_label = str(names.get(cls_id, str(cls_id)))
-                label = raw_label.replace("\n", "").replace("\r", "").replace("\t", "").strip().upper()
-                label_key = normalize_label_text(label)
-                det_conf = float(box.conf[0].item())
-
-                detected_labels.append("%s|norm=%s(%.2f)" % (label, label_key, det_conf))
+                label = str(names.get(cls_id, str(cls_id))).strip().upper()
+                if label != target_key:
+                    continue
 
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                pressed_label, pressed_conf = self.classify_pressed_state(color_image, x1, y1, x2, y2)
 
-                # 먼저 검출 bbox를 모두 화면에 표시한다.
-                color = (180, 180, 180)
-                if label_key == target_key:
-                    color = (0, 255, 0)
-
-                pressed_label = "-"
-                pressed_conf = 0.0
-
-                # target label인 경우에만 best2.pt로 ON/OFF 분류한다.
-                if label_key == target_key:
-                    pressed_label, pressed_conf = self.classify_pressed_state(color_image, x1, y1, x2, y2)
-
-                    if pressed_conf > best_conf:
-                        best_state = str(pressed_label).strip().lower()
-                        best_conf = float(pressed_conf)
-                        best_det_conf = det_conf
-
-                    if str(pressed_label).lower() == "on":
-                        color = (0, 255, 0)
-                    elif str(pressed_label).lower() == "off":
-                        color = (0, 0, 255)
-                    else:
-                        color = (0, 255, 255)
-
-                cv2.rectangle(dbg, (x1, y1), (x2, y2), color, 2)
-                txt = "%s det=%.2f state=%s(%.2f)" % (label, det_conf, str(pressed_label).upper(), pressed_conf)
-                cv2.putText(
-                    dbg,
-                    txt,
-                    (x1, max(20, y1 - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    color,
-                    2
-                )
-
-            # button_state 확인 중에도 화면이 멈추지 않도록 현재 프레임을 계속 갱신한다.
-            status_txt = "button_state target=%s best=%s(%.2f) det_conf=%.2f" % (
-                target_key,
-                str(best_state),
-                best_conf,
-                best_det_conf
-            )
-            cv2.putText(
-                dbg,
-                status_txt,
-                (20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 0),
-                2
-            )
-            cv2.putText(
-                dbg,
-                "detected: " + ", ".join(detected_labels[:4]),
-                (20, 60),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 255, 0),
-                2
-            )
-
-            if self.view_image:
-                cv2.imshow("YOLO Detect + PressedClassifier + MoveIt", dbg)
-                cv2.waitKey(1)
-
-            if best_state is None:
-                rospy.logwarn_throttle(
-                    0.5,
-                    "[button_state] target %s not found. detected=%s",
-                    target_key,
-                    ", ".join(detected_labels)
-                )
-                return None, 0.0
-
-            rospy.loginfo_throttle(
-                0.3,
-                "[button_state] target %s detected. state=%s cls_conf=%.2f det_conf=%.2f detected=%s",
-                target_key,
-                str(best_state),
-                best_conf,
-                best_det_conf,
-                ", ".join(detected_labels)
-            )
+                if pressed_conf > best_conf:
+                    best_state = str(pressed_label).lower()
+                    best_conf = float(pressed_conf)
 
             return best_state, best_conf
 
@@ -920,46 +826,6 @@ class YoloObjectTFDetector:
             rospy.logerr("execute_pose_push failed for [%s]: %s", label, str(e))
             return False
 
-    def get_adaptive_target_offsets(self, info):
-        """
-        카메라 좌표계 기준 인식 위치에 따른 목표 좌표 보정값 계산.
-
-        기본값은 ROS 파라미터 또는 __init__에서 지정된 값을 사용한다.
-          offset_x = self.target_offset_x
-          offset_y = self.target_offset_y
-          offset_z = self.target_offset_z
-
-        적용 조건:
-          cam_x < -0.05  -> offset_x = 0.02, offset_z = 0.02
-          cam_y >  0.03  -> offset_z = 0.02
-          cam_y < -0.05  -> offset_z = 0.005
-        """
-        offset_x = self.target_offset_x
-        offset_y = self.target_offset_y
-        offset_z = self.target_offset_z
-
-        cam_x = info.get("cam_x", None)
-        cam_y = info.get("cam_y", None)
-
-        if cam_x is None:
-            rospy.logwarn("cam_x is not stored for this target. Use base x as fallback for adaptive offset.")
-            cam_x = info.get("x", 0.0)
-
-        if cam_y is None:
-            rospy.logwarn("cam_y is not stored for this target. Use base y as fallback for adaptive offset.")
-            cam_y = info.get("y", 0.0)
-
-        if cam_x < -0.05:
-            offset_x = 0.02
-            offset_z = 0.02
-
-        if cam_y > 0.03:
-            offset_z = 0.02
-        elif cam_y < -0.05:
-            offset_z = 0.005
-
-        return offset_x, offset_y, offset_z
-
     def move_to_target_then_compensate(self, x, y, z, label="target"):
         if not self.move_to_position_only(x, y, z, label=label):
             return False
@@ -970,38 +836,69 @@ class YoloObjectTFDetector:
     def execute_pending_target_if_requested(self):
         if self.pending_target_label is None:
             return
+
         cmd = self.pending_target_label.strip().upper()
         self.pending_target_label = None
+
         if cmd == "LIST":
             self.print_detected_targets_log()
             return
-        if cmd not in self.detected_targets:
-            rospy.logwarn_throttle(1.0, "Requested label [%s] is not currently detected yet. Keep waiting...", cmd)
-            self.pending_target_label = cmd
-            return
-        info = self.detected_targets[cmd]
+
+        # ==========================================================
+        # 목표 버튼 정보 결정
+        # 1) 요청한 버튼이 직접 검출되어 있으면 그 좌표 사용
+        # 2) F3가 직접 검출되지 않았고 F2/F4가 있으면 중간 좌표 사용
+        # 3) 둘 다 안 되면 기존처럼 다시 대기
+        # ==========================================================
+        if cmd in self.detected_targets:
+            info = self.detected_targets[cmd]
+            rospy.loginfo("[target_select] Use directly detected target: %s", cmd)
+
+        else:
+            if cmd == "F3":
+                info = self.estimate_f3_from_f2_f4()
+
+                if info is None:
+                    rospy.logwarn_throttle(
+                        1.0,
+                        "Requested label [F3] is not detected, and F2/F4 fallback is not available. Keep waiting..."
+                    )
+                    self.pending_target_label = cmd
+                    return
+
+                # 중요: fallback 좌표가 만들어졌으면 여기서 return 하지 않고
+                # 아래 이동 코드로 그대로 내려가야 한다.
+                rospy.logwarn("[target_select] Use estimated F3 target from F2/F4 fallback.")
+
+            else:
+                rospy.logwarn_throttle(
+                    1.0,
+                    "Requested label [%s] is not currently detected yet. Keep waiting...",
+                    cmd
+                )
+                self.pending_target_label = cmd
+                return
+
         rospy.loginfo(
-            "RAW target [%s]: base=(%.3f, %.3f, %.3f), cam=(%.3f, %.3f, %.3f), state=%s(%.2f)",
+            "RAW target [%s]: x=%.3f y=%.3f z=%.3f state=%s(%.2f)",
             cmd,
             info["x"], info["y"], info["z"],
-            info.get("cam_x", 0.0), info.get("cam_y", 0.0), info.get("cam_z", 0.0),
             info["pressed_label"], info["pressed_conf"]
         )
 
-        offset_x, offset_y, offset_z = self.get_adaptive_target_offsets(info)
-        x = info["x"] + offset_x
-        y = info["y"] + offset_y
-        z = info["z"] + offset_z
+        x = info["x"] + self.target_offset_x
+        y = info["y"] + self.target_offset_y
+        z = info["z"] + self.target_offset_z
 
         rospy.loginfo(
-            "Adaptive offset [%s]: offset_x=%.3f offset_y=%.3f offset_z=%.3f -> target=(%.3f, %.3f, %.3f)",
-            cmd, offset_x, offset_y, offset_z, x, y, z
+            "FINAL target [%s]: x=%.3f y=%.3f z=%.3f after offset",
+            cmd, x, y, z
         )
 
         mission_ok = self.move_to_target_then_compensate(x, y, z, label=cmd)
-        
-        
+
         rospy.sleep(2.0)
+
         # F3 버튼은 push 성공 직후 바로 완료 처리하지 않는다.
         # push 후 F3 상태가 ON이 된 것을 확인하고, 이후 OFF로 변경될 때 SEXY_BUTTON을 publish한다.
         if cmd == "F3" and mission_ok:
@@ -1015,12 +912,16 @@ class YoloObjectTFDetector:
                 )
                 self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
 
+                # SEXY_BUTTON 전송 후 카메라 시각화 종료
+                self.stop_visualization()
+
                 # SEXY_BUTTON 전송과 별개로, 전송 직후 마무리 자세로 복귀한다.
                 finish_ok = self.move_to_finish_pose_after_button(label=cmd)
                 if not finish_ok:
                     rospy.logwarn("[arm_mission] finish pose move failed after SEXY_BUTTON publish")
             else:
                 rospy.logwarn("[arm_mission] F3 ON->OFF transition not confirmed. SEXY_BUTTON event not published.")
+
         elif cmd == "F3" and not mission_ok:
             rospy.logwarn("[arm_mission] F3 mission failed. SEXY_BUTTON event not published.")
 
@@ -1078,7 +979,7 @@ class YoloObjectTFDetector:
                         cv2.putText(dbg, text, (x1, max(20, y1 - 10)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-                        self.update_detected_target(label, bx, by, bz, X, Y, Z, conf, stamp, pressed_label, pressed_conf)
+                        self.update_detected_target(label, bx, by, bz, conf, stamp, pressed_label, pressed_conf)
 
                 self.clear_stale_targets(stamp)
                 self.execute_pending_target_if_requested()
@@ -1108,6 +1009,18 @@ class YoloObjectTFDetector:
             except Exception as e:
                 rospy.logerr_throttle(1.0, "Runtime error: %s", str(e))
                 rate.sleep()
+
+
+    def stop_visualization(self):
+        """
+        카메라 시각화 창을 닫고 이후 imshow/waitKey 호출을 중단한다.
+        카메라 토픽 구독과 객체 인식 루프는 유지한다.
+        """
+        self.view_image = False
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
 
     def shutdown_hook(self):
         try:
