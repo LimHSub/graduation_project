@@ -1,1 +1,3 @@
-
+  <param name="precise_arrival_max_time" value="10.0"/>
+  <param name="precise_arrival_xy_tolerance" value="0.05"/>
+  <param name="precise_arrival_yaw_tolerance" value="0.052"/>
