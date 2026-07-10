@@ -1,3 +1,48 @@
   <param name="precise_arrival_max_time" value="10.0"/>
   <param name="precise_arrival_xy_tolerance" value="0.05"/>
   <param name="precise_arrival_yaw_tolerance" value="0.052"/>
+
+
+
+
+
+
+precise_arrival_controller:
+  global_frame: "map"
+  robot_frame: "base_link"
+
+  cmd_vel_topic: "/cmd_vel_nav"
+  amcl_pose_topic: "/amcl_pose"
+
+  control_rate: 20.0
+
+  max_align_time: 10.0
+  xy_tolerance: 0.05
+  yaw_tolerance: 0.052
+  stable_time: 0.4
+
+  max_linear_vel: 0.06
+  max_angular_vel: 0.20
+
+  min_linear_vel: 0.02
+  min_angular_vel: 0.07
+
+  position_phase_dist: 0.07
+  heading_tolerance: 0.15
+
+  k_linear: 0.45
+  k_angular_heading: 0.8
+  k_angular_yaw: 0.7
+
+  no_improvement_time: 3.0
+  min_improvement: 0.003
+
+  tf_lookup_timeout: 0.2
+
+  require_amcl_stable: false
+  amcl_wait_time: 0.5
+  amcl_cov_x_max: 0.5
+  amcl_cov_y_max: 0.5
+  amcl_cov_yaw_max: 0.2
+
+  allow_reverse: true
