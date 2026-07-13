@@ -100,7 +100,7 @@ class MarkerPoseControllerPanel:
         # PWM
         self.turn_pwm = int(rospy.get_param("~turn_pwm", 8))
         self.forward_pwm = int(rospy.get_param("~forward_pwm", 25))
-        self.forward_slow_pwm = int(rospy.get_param("~forward_slow_pwm", 5))
+        self.forward_slow_pwm = int(rospy.get_param("~forward_slow_pwm", 8))
 
         # launch에서 개별 pwm 주는 경우 우선 사용
         self.pwm_forward_l = int(rospy.get_param("~pwm_forward_l", self.forward_pwm))
