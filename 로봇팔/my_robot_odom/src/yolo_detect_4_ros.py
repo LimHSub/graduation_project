@@ -33,11 +33,11 @@ class YoloObjectTFDetector:
         rospy.init_node("yolo_object_tf_detector", anonymous=False)
 
         # YOLO models
-        self.detect_model_path = "/home/inwoong/catkin_ws/best1.pt"
+        self.detect_model_path = "/home/inwoong/catkin_ws/panel_button_best.pt"
         self.pressed_model_path = "/home/inwoong/catkin_ws/best2.pt"
 
         self.target_class = ""
-        self.detect_conf_thresh = 0.25
+        self.detect_conf_thresh = 0.5
         self.detect_iou_thresh = 0.45
         self.classify_imgsz = 224
 
@@ -79,9 +79,9 @@ class YoloObjectTFDetector:
         self.pose_push_planning_time = 2.0
         self.pose_push_num_planning_attempts = 10
 
-        self.target_offset_x = 0.02			# base_link y축()
-        self.target_offset_y = -0.04			# base_link x축()
-        self.target_offset_z = 0.025
+        self.target_offset_x = 0.01			# base_link y축() 0.02
+        self.target_offset_y = 0.0			# base_link x축() 0.015
+        self.target_offset_z = 0.015
 
         # current monitor
         self.current_topic = "/arm/joint_current_raw"
@@ -93,10 +93,24 @@ class YoloObjectTFDetector:
         self.current_baseline_duration = 0.5
         self.current_baseline_dt = 0.05
         self.current_poll_dt = 0.02
-        self.contact_q3_delta_th = 10.0
-        self.contact_q2_abs_delta_th = 30.0
-        self.contact_consecutive_required = 2
-        self.pose_push_timeout = 6.0
+        # Contact detection thresholds (can be changed from launch/rosparam)
+        self.contact_q3_delta_th = float(rospy.get_param("~contact_q3_delta_th", 15.0))
+        self.contact_q2_abs_delta_th = float(rospy.get_param("~contact_q2_abs_delta_th", 40.0))
+        self.contact_consecutive_required = int(rospy.get_param("~contact_consecutive_required", 2))
+        self.pose_push_timeout = float(rospy.get_param("~pose_push_timeout", 6.0))
+
+        # Current feedback debug / visualization
+        self.current_debug_enable = bool(rospy.get_param("~current_debug_enable", True))
+        self.current_debug_dir = rospy.get_param(
+            "~current_debug_dir",
+            os.path.expanduser("~/Pictures")
+        )
+        self.current_debug_history = []
+        self.current_debug_baseline = None
+        self.current_debug_label = "target"
+        self.current_debug_t0 = None
+        self.current_debug_view = bool(rospy.get_param("~current_debug_view", True))
+        self.current_debug_window_name = "Arm Current Feedback Debug"
 
         self.pre_push_joint_map = None
         self.start_pose_joint_map = {
@@ -108,7 +122,7 @@ class YoloObjectTFDetector:
         }
 
         # fk compare / stabilization
-        self.settle_initial_wait = 1.5
+        self.settle_initial_wait = 0.6
         self.settle_num_samples = 5
         self.settle_sample_interval = 0.03
         self.use_median_joint_sampling = True
@@ -116,10 +130,10 @@ class YoloObjectTFDetector:
         self.level_roll_ref = -0.088
         self.comp_q2_span = 0.30
         self.comp_q3_span = 0.30
-        self.comp_step = 0.02
+        self.comp_step = 0.03
         self.comp_pos_weight = 40.0
         self.comp_roll_weight = 1.0
-        self.comp_z_drop_weight = 60.0
+        self.comp_z_error_weight = 60.0
         self.comp_q5_gain = 0.60
         self.comp_adaptive_stages = [
             {"name": "strict",  "q2_span_scale": 1.00, "q3_span_scale": 1.00, "q5_gain": 0.60, "z_drop_limit": 0.010},
@@ -367,6 +381,170 @@ class YoloObjectTFDetector:
                 info["pressed_conf"]
             )
 
+    def reset_current_debug(self, label="target", baseline=None):
+        if not self.current_debug_enable:
+            return
+        try:
+            os.makedirs(self.current_debug_dir, exist_ok=True)
+        except Exception as e:
+            rospy.logwarn("Failed to create current debug dir: %s", str(e))
+        self.current_debug_history = []
+        self.current_debug_baseline = baseline
+        self.current_debug_label = str(label)
+        self.current_debug_t0 = time.time()
+        rospy.loginfo(
+            "[current_debug] start label=%s baseline=%s thresholds: q3_delta>=%.1f, abs(q2_delta)>=%.1f, consecutive=%d",
+            self.current_debug_label,
+            str(baseline),
+            self.contact_q3_delta_th,
+            self.contact_q2_abs_delta_th,
+            self.contact_consecutive_required
+        )
+
+    def record_current_debug(self, info=None, contact=False, contact_count=0):
+        if not self.current_debug_enable or self.current_debug_t0 is None:
+            return
+        if info is None:
+            i2, i3 = self.get_current_q2_q3_raw()
+            if i2 is None or i3 is None:
+                return
+            baseline = self.current_debug_baseline or {"q2": i2, "q3": i3}
+            info = {
+                "i2": i2,
+                "i3": i3,
+                "d2": i2 - baseline["q2"],
+                "d3": i3 - baseline["q3"],
+            }
+        row = {
+            "t": time.time() - self.current_debug_t0,
+            "q2": float(info.get("i2", 0.0)),
+            "q3": float(info.get("i3", 0.0)),
+            "d2": float(info.get("d2", 0.0)),
+            "d3": float(info.get("d3", 0.0)),
+            "contact": 1 if contact else 0,
+            "contact_count": int(contact_count),
+        }
+        self.current_debug_history.append(row)
+        if self.current_debug_view and len(self.current_debug_history) >= 2:
+            self.show_current_debug_plot_live()
+
+    def show_current_debug_plot_live(self):
+        try:
+            img = self.make_current_debug_plot_image()
+            if img is not None:
+                cv2.imshow(self.current_debug_window_name, img)
+                cv2.waitKey(1)
+        except Exception as e:
+            rospy.logwarn_throttle(1.0, "current debug live plot failed: %s", str(e))
+
+    def make_current_debug_plot_image(self):
+        if not self.current_debug_history:
+            return None
+        w, h = 900, 520
+        margin_l, margin_r, margin_t, margin_b = 75, 30, 55, 70
+        plot_w = w - margin_l - margin_r
+        plot_h = h - margin_t - margin_b
+        img = np.full((h, w, 3), 255, dtype=np.uint8)
+
+        rows = self.current_debug_history
+        ts = np.array([r["t"] for r in rows], dtype=np.float64)
+        d2 = np.array([r["d2"] for r in rows], dtype=np.float64)
+        d3 = np.array([r["d3"] for r in rows], dtype=np.float64)
+        contacts = np.array([r["contact"] for r in rows], dtype=np.int32)
+
+        x_min = 0.0
+        x_max = max(1.0, float(ts[-1]))
+        y_abs_max = max(
+            10.0,
+            float(np.max(np.abs(d2))) if d2.size else 0.0,
+            float(np.max(np.abs(d3))) if d3.size else 0.0,
+            abs(float(self.contact_q2_abs_delta_th)),
+            abs(float(self.contact_q3_delta_th)),
+        ) * 1.15
+        y_min, y_max = -y_abs_max, y_abs_max
+
+        def x_to_px(x):
+            return int(margin_l + (float(x) - x_min) / (x_max - x_min) * plot_w)
+
+        def y_to_px(y):
+            return int(margin_t + (y_max - float(y)) / (y_max - y_min) * plot_h)
+
+        # axes/grid
+        cv2.rectangle(img, (margin_l, margin_t), (margin_l + plot_w, margin_t + plot_h), (0, 0, 0), 1)
+        for frac in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            y = margin_t + int(frac * plot_h)
+            cv2.line(img, (margin_l, y), (margin_l + plot_w, y), (225, 225, 225), 1)
+        zero_y = y_to_px(0.0)
+        cv2.line(img, (margin_l, zero_y), (margin_l + plot_w, zero_y), (80, 80, 80), 1)
+
+        # thresholds
+        q2_th = abs(float(self.contact_q2_abs_delta_th))
+        q3_th = float(self.contact_q3_delta_th)
+        for val, col, name in [
+            (q2_th, (0, 140, 255), "+Q2 th"),
+            (-q2_th, (0, 140, 255), "-Q2 th"),
+            (q3_th, (220, 0, 0), "Q3 th"),
+        ]:
+            y = y_to_px(val)
+            cv2.line(img, (margin_l, y), (margin_l + plot_w, y), col, 1)
+            cv2.putText(img, name, (margin_l + plot_w - 90, max(15, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1)
+
+        def draw_line(values, color):
+            pts = []
+            for t, v in zip(ts, values):
+                pts.append((x_to_px(t), y_to_px(v)))
+            for a, b in zip(pts[:-1], pts[1:]):
+                cv2.line(img, a, b, color, 2)
+
+        draw_line(d2, (0, 140, 255))
+        draw_line(d3, (220, 0, 0))
+
+        # contact markers
+        for t, c in zip(ts, contacts):
+            if c:
+                x = x_to_px(t)
+                cv2.line(img, (x, margin_t), (x, margin_t + plot_h), (0, 180, 0), 1)
+
+        title = "Current feedback delta during push - %s" % self.current_debug_label
+        cv2.putText(img, title, (25, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 2)
+        cv2.putText(img, "orange: d2 = q2-baseline | blue/red: d3 = q3-baseline | green vertical: contact", (25, h - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (70, 70, 70), 1)
+        cv2.putText(img, "time (s)", (margin_l + plot_w // 2 - 30, h - 45), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
+        cv2.putText(img, "delta current", (8, margin_t + plot_h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+        cv2.putText(img, "d2", (margin_l + 10, margin_t + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 140, 255), 2)
+        cv2.putText(img, "d3", (margin_l + 60, margin_t + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 0, 0), 2)
+        cv2.putText(img, "q2_th=%.1f q3_th=%.1f count=%d" % (self.contact_q2_abs_delta_th, self.contact_q3_delta_th, self.contact_consecutive_required), (margin_l + 115, margin_t + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1)
+        return img
+
+    def save_current_debug_files(self, label="target"):
+        if not self.current_debug_enable or not self.current_debug_history:
+            return None, None
+        try:
+            os.makedirs(self.current_debug_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            safe_label = str(label).replace("/", "_").replace(" ", "_")
+            csv_path = os.path.join(self.current_debug_dir, "current_%s_%s.csv" % (safe_label, stamp))
+            png_path = os.path.join(self.current_debug_dir, "current_%s_%s.png" % (safe_label, stamp))
+
+            with open(csv_path, "w") as f:
+                f.write("t,q2,q3,d2,d3,contact,contact_count,q2_abs_th,q3_delta_th,required_count\n")
+                for r in self.current_debug_history:
+                    f.write("%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%.4f,%.4f,%d\n" % (
+                        r["t"], r["q2"], r["q3"], r["d2"], r["d3"],
+                        r["contact"], r["contact_count"],
+                        self.contact_q2_abs_delta_th, self.contact_q3_delta_th, self.contact_consecutive_required
+                    ))
+
+            img = self.make_current_debug_plot_image()
+            if img is not None:
+                cv2.imwrite(png_path, img)
+
+            rospy.loginfo("[current_debug] saved csv: %s", csv_path)
+            rospy.loginfo("[current_debug] saved plot: %s", png_path)
+            return csv_path, png_path
+        except Exception as e:
+            rospy.logwarn("save current debug files failed: %s", str(e))
+            return None, None
+
     def get_current_q2_q3_raw(self):
         if self.latest_joint_current_raw is None:
             return None, None
@@ -506,8 +684,16 @@ class YoloObjectTFDetector:
             gain = self.comp_q5_gain
         return self.clamp_joint("Revolute5", current_q5 + gain * (desired_q5 - current_q5))
 
-    def score_comp_candidate(self, pos_err, roll_err, z_drop):
-        return self.comp_pos_weight * pos_err + self.comp_roll_weight * roll_err + self.comp_z_drop_weight * z_drop
+    def score_comp_candidate(self, pos_err, roll_err, z_error):
+        # 자세 재조정 후보 평가는 목표 TCP 절대 위치 기준으로 수행한다.
+        # 기존 z_drop 방식은 목표보다 아래로 내려간 경우만 패널티를 주어,
+        # 후보 TCP가 목표보다 위로 올라가는 현상을 막지 못했다.
+        # 따라서 Z축도 위/아래 방향 모두 동일하게 절대 오차로 평가한다.
+        return (
+            self.comp_pos_weight * pos_err +
+            self.comp_roll_weight * roll_err +
+            self.comp_z_error_weight * z_error
+        )
 
     def evaluate_comp_candidate(self, joint_names, joint_positions, target_xyz):
         fk_pose = self.get_fk_pose(joint_names, joint_positions, self.ee_link)
@@ -515,10 +701,20 @@ class YoloObjectTFDetector:
             return None
         pos = self.pose_to_xyz(fk_pose)
         err = self.compute_xyz_error(target_xyz, pos)
-        z_drop = max(0.0, target_xyz[2] - pos[2])
+
+        # 목표 TCP 좌표 기준 Z축 절대 오차를 사용한다.
+        # Joint1이 90도 회전되어도 Z축은 동일한 높이축이므로 동일하게 적용 가능하다.
+        z_error = abs(target_xyz[2] - pos[2])
+
         roll, pitch, yaw = self.get_roll_from_pose(fk_pose)
         roll_err = abs(roll - self.level_roll_ref)
-        return {"joint_names": list(joint_names), "joints": list(joint_positions), "score": self.score_comp_candidate(err["dist"], roll_err, z_drop)}
+        return {
+            "joint_names": list(joint_names),
+            "joints": list(joint_positions),
+            "score": self.score_comp_candidate(err["dist"], roll_err, z_error),
+            "pos": pos,
+            "z_error": z_error
+        }
 
     def find_best_compensation_once(self, target_xyz):
         info = self.collect_joint_value_samples()
@@ -546,9 +742,15 @@ class YoloObjectTFDetector:
                         continue
                     fk_pose = self.get_fk_pose(joint_names, cand, self.ee_link)
                     pos = self.pose_to_xyz(fk_pose)
-                    z_drop = max(0.0, target_xyz[2] - pos[2])
-                    if z_drop > z_drop_limit:
+
+                    # 1차 이동에서 사용한 목표 TCP 좌표(target_xyz)를 기준으로
+                    # 후보 TCP의 Z축 절대 위치 차이를 제한한다.
+                    # 기존 z_drop은 아래로 내려간 경우만 제한했으나,
+                    # z_error는 위/아래 방향 모두 제한한다.
+                    z_error = abs(target_xyz[2] - pos[2])
+                    if z_error > z_drop_limit:
                         continue
+
                     if best is None or ev["score"] < best["score"]:
                         best = ev
             if best is not None:
@@ -649,6 +851,8 @@ class YoloObjectTFDetector:
             if baseline is None:
                 return False
 
+            self.reset_current_debug(label=label, baseline=baseline)
+
             self.arm_group.set_start_state_to_current_state()
             self.arm_group.set_planning_time(self.pose_push_planning_time)
             self.arm_group.set_num_planning_attempts(self.pose_push_num_planning_attempts)
@@ -677,6 +881,7 @@ class YoloObjectTFDetector:
                     contact_count += 1
                 else:
                     contact_count = 0
+                self.record_current_debug(info=info, contact=contact, contact_count=contact_count)
                 if contact_count >= self.contact_consecutive_required:
                     contact_triggered = True
                     self.arm_group.stop()
@@ -686,6 +891,9 @@ class YoloObjectTFDetector:
                     rospy.sleep(0.2)
                     rospy.loginfo("[arm_mission] publish SEXY_PANEL (after contact)")
                     self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
+
+                    # 패널 미션 완료 후 OpenCV 시각화 창을 종료하여 CPU/GPU 점유를 줄인다.
+                    self.stop_visualization()
                     
                     break
                 if time.time() - start_t > self.pose_push_timeout:
@@ -695,6 +903,7 @@ class YoloObjectTFDetector:
 
             self.arm_group.stop()
             self.arm_group.clear_pose_targets()
+            self.save_current_debug_files(label=label)
             rospy.sleep(0.3)
             if contact_triggered:
                 self.move_to_saved_pre_push_then_start_pose(label=label)
@@ -706,7 +915,16 @@ class YoloObjectTFDetector:
     def move_to_target_then_compensate(self, x, y, z, label="target"):
         if not self.move_to_position_only(x, y, z, label=label):
             return False
+
+        # 자세 재조정 기준은 1차 이동에 사용한 동일한 TCP 목표 좌표를 그대로 사용한다.
+        # 즉, 1차 이동 후 FK로 다시 얻은 현재 TCP 좌표를 기준으로 삼지 않고,
+        # offset이 적용된 최종 목표 좌표 [x, y, z]를 기준으로 J2/J3/J5 보정 후보를 평가한다.
         target_xyz = [x, y, z]
+        rospy.loginfo(
+            "Compensation fixed target uses 1st target xyz [%s]: x=%.3f y=%.3f z=%.3f",
+            label, target_xyz[0], target_xyz[1], target_xyz[2]
+        )
+
         self.compensate_after_move_once(target_xyz, label=label)
         return self.execute_pose_push(label=label)
 
@@ -725,31 +943,23 @@ class YoloObjectTFDetector:
         info = self.detected_targets[cmd]
         rospy.loginfo("RAW target [%s]: x=%.3f y=%.3f z=%.3f state=%s(%.2f)",
                       cmd, info["x"], info["y"], info["z"], info["pressed_label"], info["pressed_conf"])
-        cam_x_mm = info.get("cam_x", 0.0) * 1000.0
+        cam_x = info.get("cam_x", 0.0)
+        cam_y = info.get("cam_y", 0.0)
+        cam_z = info.get("cam_z", 0.0)
 
-        if cam_x_mm < -100:
-            offset_y = -0.03
-        elif cam_x_mm > 100:
-            offset_y = -0.05
-        elif cam_x_mm > 20 and cam_x_mm < 100:
-            offset_y = -0.05
-        else:
-            offset_y = -0.04
-
+        # 90도 회전용 offset 보정
+        # 기존 파일의 조건(cam_x, cam_y)은 그대로 사용하고,
+        # base 기준 보정 방향만 x -> y로 변경한다.
         rospy.loginfo(
             "CAMERA target [%s]: X=%.1fmm Y=%.1fmm Z=%.1fmm",
             cmd,
-            info.get("cam_x", 0.0) * 1000.0,
-            info.get("cam_y", 0.0) * 1000.0,
-            info.get("cam_z", 0.0) * 1000.0,
-        )
-        rospy.loginfo(
-            "OFFSET decision [%s]: cam_x=%.1fmm -> offset_y=%.3f",
-            cmd, cam_x_mm, offset_y
+            cam_x * 1000.0,
+            cam_y * 1000.0,
+            cam_z * 1000.0,
         )
 
         x = info["x"] + self.target_offset_x
-        y = info["y"] + offset_y
+        y = info["y"] + self.target_offset_y
         z = info["z"] + self.target_offset_z
 
         mission_ok = self.move_to_target_then_compensate(x, y, z, label=cmd)
@@ -843,6 +1053,19 @@ class YoloObjectTFDetector:
             except Exception as e:
                 rospy.logerr_throttle(1.0, "Runtime error: %s", str(e))
                 rate.sleep()
+
+    def stop_visualization(self):
+        """
+        패널 미션 완료 후 카메라 시각화만 종료한다.
+        ROS 카메라 토픽 구독과 노드 실행은 유지하되, OpenCV imshow/waitKey 호출을 중단한다.
+        """
+        if self.view_image:
+            rospy.loginfo("[vision] stop OpenCV visualization after panel mission done")
+        self.view_image = False
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
 
     def shutdown_hook(self):
         try:
