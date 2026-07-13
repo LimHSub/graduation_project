@@ -56,6 +56,41 @@ class YoloObjectTFDetector:
         self.depth_max = 3.0
         self.target_timeout = 5.0
 
+        # ----------------------------------------------------------
+        # F3 geometry / state validation
+        # Button layout used only as relative geometry, not robot target coords:
+        #     F6
+        #     F2  F3  F4  F5
+        #     F1  B1
+        # ----------------------------------------------------------
+        self.button_gap = float(rospy.get_param("~button_gap", 0.06))
+        self.button_distance_tol = float(rospy.get_param("~button_distance_tol", 0.035))
+        self.button_middle_ratio_tol = float(rospy.get_param("~button_middle_ratio_tol", 0.18))
+        self.button_line_tol = float(rospy.get_param("~button_line_tol", 0.030))
+        self.f3_off_min_conf = float(rospy.get_param("~f3_off_min_conf", 0.50))
+        self.f3_on_min_conf = float(rospy.get_param("~f3_on_min_conf", 0.50))
+        self.f3_stable_required = int(rospy.get_param("~f3_stable_required", 3))
+        self.f3_stable_window = float(rospy.get_param("~f3_stable_window", 1.0))
+        self.f3_stable_pos_tol = float(rospy.get_param("~f3_stable_pos_tol", 0.020))
+        self.f3_stable_min_conf = float(rospy.get_param("~f3_stable_min_conf", 0.50))
+        self.target_history = {}
+        self.target_history_max = int(rospy.get_param("~target_history_max", 30))
+
+        self.button_grid = {
+            "F6": (0.0, 1.0),
+            "F2": (0.0, 0.0),
+            "F3": (1.0, 0.0),
+            "F4": (2.0, 0.0),
+            "F5": (3.0, 0.0),
+            "F1": (0.0, -1.0),
+            "B1": (1.0, -1.0),
+        }
+
+        # Re-detection motion. While moving, YOLO inference is paused and stored targets are cleared.
+        self.detection_paused = False
+        self.f3_reobserve_attempted = False
+        self.reobserve_settle_wait = float(rospy.get_param("~reobserve_settle_wait", 0.8))
+
         # MoveIt
         self.enable_moveit = True
         self.move_group_name = "arm"
@@ -77,8 +112,8 @@ class YoloObjectTFDetector:
         self.pose_push_num_planning_attempts = 10
 
         self.target_offset_x = float(rospy.get_param("~target_offset_x", 0.005))
-        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.02))
-        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.0))
+        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.015))
+        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.015))
 
         # current monitor
         self.current_topic = "/arm/joint_current_raw"
@@ -103,6 +138,12 @@ class YoloObjectTFDetector:
             "Revolute4": 0.0,
             "Revolute5": 1.243,
         }
+
+        # F3/F2/F4 인식이 부족할 때 사용하는 재인식 자세
+        # 요청 조건: 2번 조인트 +0.08, 5번 조인트 -0.08
+        self.reobserve_pose_joint_map = dict(self.start_pose_joint_map)
+        self.reobserve_pose_joint_map["Revolute2"] = self.start_pose_joint_map["Revolute2"] + float(rospy.get_param("~reobserve_q2_delta", 0.08))
+        self.reobserve_pose_joint_map["Revolute5"] = self.start_pose_joint_map["Revolute5"] + float(rospy.get_param("~reobserve_q5_delta", -0.08))
 
         # F3 버튼 임무 종료 후 복귀 자세
         # move_start_pose_panel.sh에 있던 joint 값을 코드 내부에서 직접 사용한다.
@@ -285,6 +326,8 @@ class YoloObjectTFDetector:
         label = msg.data.strip().upper()
         if label:
             self.pending_target_label = label
+            if label == "F3":
+                self.f3_reobserve_attempted = False
             rospy.loginfo("Received target label command: %s", label)
 
     def get_depth_robust(self, depth_image, u, v, r=2):
@@ -353,45 +396,264 @@ class YoloObjectTFDetector:
 
     def update_detected_target(self, label, bx, by, bz, conf, stamp, pressed_label="unknown", pressed_conf=0.0):
         key = str(label).strip().upper()
-        self.detected_targets[key] = {
+        info = {
             "x": float(bx), "y": float(by), "z": float(bz),
             "conf": float(conf), "stamp": stamp,
-            "pressed_label": str(pressed_label), "pressed_conf": float(pressed_conf)
+            "pressed_label": str(pressed_label).lower(), "pressed_conf": float(pressed_conf)
         }
+        self.detected_targets[key] = info
+
+        hist = self.target_history.setdefault(key, [])
+        hist.append(dict(info))
+        if len(hist) > self.target_history_max:
+            del hist[:-self.target_history_max]
 
     def clear_stale_targets(self, now):
         for k in list(self.detected_targets.keys()):
             if (now - self.detected_targets[k]["stamp"]).to_sec() > self.target_timeout:
                 del self.detected_targets[k]
-    
-    def estimate_f3_from_f2_f4(self):
-    
-    #F3가 직접 검출되지 않았을 때, F2와 F4의 base_link 좌표 중간값으로 F3 위치를 추정한다.
-        if "F2" not in self.detected_targets or "F4" not in self.detected_targets:
-            return None
 
-        f2 = self.detected_targets["F2"]
-        f4 = self.detected_targets["F4"]
+        # 연속 프레임 안정성 확인용 history도 오래된 것은 삭제한다.
+        keep_sec = max(self.target_timeout, self.f3_stable_window)
+        for k in list(self.target_history.keys()):
+            self.target_history[k] = [
+                info for info in self.target_history[k]
+                if (now - info["stamp"]).to_sec() <= keep_sec
+            ]
+            if not self.target_history[k]:
+                del self.target_history[k]
+
+    def clear_detection_buffers(self):
+        self.detected_targets.clear()
+        self.target_history.clear()
+
+    def target_xyz(self, info):
+        return [float(info["x"]), float(info["y"]), float(info["z"])]
+
+    def expected_button_distance(self, label_a, label_b):
+        a = str(label_a).strip().upper()
+        b = str(label_b).strip().upper()
+        if a not in self.button_grid or b not in self.button_grid:
+            return None
+        ax, ay = self.button_grid[a]
+        bx, by = self.button_grid[b]
+        grid_dist = math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
+        return grid_dist * self.button_gap
+
+    def check_button_distance(self, label_a, info_a, label_b, info_b, reason="geometry"):
+        expected = self.expected_button_distance(label_a, label_b)
+        if expected is None:
+            return False
+        actual = self.norm3(self.target_xyz(info_a), self.target_xyz(info_b))
+        ok = abs(actual - expected) <= self.button_distance_tol
+        log_msg = "[%s] distance %s: %s-%s actual=%.3f expected=%.3f tol=%.3f" % (
+            reason, "ok" if ok else "bad", label_a, label_b, actual, expected, self.button_distance_tol
+        )
+        if ok:
+            rospy.loginfo(log_msg)
+        else:
+            rospy.logwarn(log_msg)
+        return ok
+
+    def check_f3_between_f2_f4(self, f2, f3, f4):
+        # 거리 확인: F2-F4 ≈ 12cm, F2-F3/F3-F4 ≈ 6cm
+        d24_ok = self.check_button_distance("F2", f2, "F4", f4, reason="f3_verify")
+        d23_ok = self.check_button_distance("F2", f2, "F3", f3, reason="f3_verify")
+        d34_ok = self.check_button_distance("F3", f3, "F4", f4, reason="f3_verify")
+        if not (d24_ok and d23_ok and d34_ok):
+            return False
+
+        p2 = np.array(self.target_xyz(f2), dtype=np.float64)
+        p3 = np.array(self.target_xyz(f3), dtype=np.float64)
+        p4 = np.array(self.target_xyz(f4), dtype=np.float64)
+        v24 = p4 - p2
+        denom = float(np.dot(v24, v24))
+        if denom < 1e-8:
+            rospy.logwarn("[f3_verify] F2/F4 vector too small")
+            return False
+
+        ratio = float(np.dot(p3 - p2, v24) / denom)
+        proj = p2 + ratio * v24
+        line_err = float(np.linalg.norm(p3 - proj))
+
+        ratio_ok = abs(ratio - 0.5) <= self.button_middle_ratio_tol
+        line_ok = line_err <= self.button_line_tol
+
+        if ratio_ok and line_ok:
+            rospy.loginfo("[f3_verify] order/line ok: F2 -> F3 -> F4 ratio=%.3f line_err=%.3f", ratio, line_err)
+            return True
+
+        rospy.logwarn("[f3_verify] order/line bad: F2 -> F3 -> F4 ratio=%.3f line_err=%.3f", ratio, line_err)
+        return False
+
+    def validate_panel_geometry_snapshot(self):
+        labels = [k for k in self.detected_targets.keys() if k in self.button_grid]
+        suspicious = []
+        for i in range(len(labels)):
+            for j in range(i + 1, len(labels)):
+                a, b = labels[i], labels[j]
+                expected = self.expected_button_distance(a, b)
+                if expected is None or expected <= 0.0:
+                    continue
+                actual = self.norm3(self.target_xyz(self.detected_targets[a]), self.target_xyz(self.detected_targets[b]))
+                if abs(actual - expected) > self.button_distance_tol:
+                    suspicious.append((a, b, actual, expected))
+
+        if suspicious:
+            for a, b, actual, expected in suspicious[:5]:
+                rospy.logwarn_throttle(
+                    1.0,
+                    "[panel_geometry] suspicious pair %s-%s actual=%.3f expected=%.3f",
+                    a, b, actual, expected
+                )
+            return False
+        return True
+
+    def get_button_state(self, info):
+        state = str(info.get("pressed_label", "unknown")).lower()
+        conf = float(info.get("pressed_conf", 0.0))
+        return state, conf
+
+    def is_f3_off(self, f3_info):
+        state, conf = self.get_button_state(f3_info)
+        ok = (state == "off" and conf >= self.f3_off_min_conf)
+        rospy.loginfo("[f3_state] OFF check: state=%s conf=%.2f ok=%s", state, conf, str(ok))
+        return ok
+
+    def is_f3_on(self, f3_info):
+        state, conf = self.get_button_state(f3_info)
+        ok = (state == "on" and conf >= self.f3_on_min_conf)
+        rospy.loginfo("[f3_state] ON check: state=%s conf=%.2f ok=%s", state, conf, str(ok))
+        return ok
+
+    def is_f3_stable_recently(self):
+        now = rospy.Time.now()
+        hist = []
+        for info in self.target_history.get("F3", []):
+            if (now - info["stamp"]).to_sec() <= self.f3_stable_window and float(info.get("conf", 0.0)) >= self.f3_stable_min_conf:
+                hist.append(info)
+
+        if len(hist) < self.f3_stable_required:
+            rospy.logwarn_throttle(1.0, "[f3_stable] insufficient F3 history: %d/%d", len(hist), self.f3_stable_required)
+            return False
+
+        pts = np.array([self.target_xyz(info) for info in hist[-self.f3_stable_required:]], dtype=np.float64)
+        center = np.median(pts, axis=0)
+        max_dev = float(np.max(np.linalg.norm(pts - center, axis=1)))
+        ok = max_dev <= self.f3_stable_pos_tol
+        if ok:
+            rospy.loginfo("[f3_stable] ok: count=%d max_dev=%.3f", len(hist), max_dev)
+        else:
+            rospy.logwarn("[f3_stable] bad: count=%d max_dev=%.3f tol=%.3f", len(hist), max_dev, self.f3_stable_pos_tol)
+        return ok
+
+    def make_f3_selection(self, info, source, skip_pre_state_check=False):
+        selected = dict(info)
+        selected["source"] = str(source)
+        selected["skip_pre_state_check"] = bool(skip_pre_state_check)
+        return selected
+
+    def estimate_f3_from_f2_f4(self, f2=None, f4=None, source="estimated_from_current_f2_f4"):
+        # F3가 직접 검출되지 않았을 때, F2와 F4의 base_link 좌표 중간값으로 F3 위치를 추정한다.
+        if f2 is None:
+            f2 = self.detected_targets.get("F2")
+        if f4 is None:
+            f4 = self.detected_targets.get("F4")
+        if f2 is None or f4 is None:
+            return None
 
         estimated = {
             "x": (f2["x"] + f4["x"]) / 2.0,
             "y": (f2["y"] + f4["y"]) / 2.0,
             "z": (f2["z"] + f4["z"]) / 2.0,
-            "conf": min(f2["conf"], f4["conf"]),
+            "conf": min(float(f2.get("conf", 0.0)), float(f4.get("conf", 0.0))),
             "stamp": rospy.Time.now(),
             "pressed_label": "estimated",
-            "pressed_conf": 0.0
+            "pressed_conf": 0.0,
         }
 
-        rospy.logwarn_throttle(
-            0.5,
-            "[fallback] F3 not detected. Estimated F3 from F2/F4: "
-            "x=%.3f y=%.3f z=%.3f | F2_conf=%.2f F4_conf=%.2f",
-            estimated["x"], estimated["y"], estimated["z"],
-            f2["conf"], f4["conf"]
+        rospy.logwarn(
+            "[f3_select] F3 estimated from F2/F4: x=%.3f y=%.3f z=%.3f | source=%s",
+            estimated["x"], estimated["y"], estimated["z"], source
         )
+        return self.make_f3_selection(estimated, source, skip_pre_state_check=True)
 
-        return estimated
+    def select_f3_target(self):
+        self.f3_select_fail_reason = "unknown"
+        self.validate_panel_geometry_snapshot()
+
+        f2 = self.detected_targets.get("F2")
+        f3 = self.detected_targets.get("F3")
+        f4 = self.detected_targets.get("F4")
+
+        # 1) F3가 현재 인식된 경우: ON이면 움직이지 않고 OFF 대기, OFF이면 위치 검증 후 사용.
+        if f3 is not None:
+            if self.is_f3_on(f3):
+                rospy.logwarn("[f3_select] F3 is already ON. Skip arm motion and wait for OFF.")
+                return self.make_f3_selection(f3, "direct_f3_already_on_wait_off", skip_pre_state_check=True)
+
+            if not self.is_f3_off(f3):
+                rospy.logwarn("[f3_select] F3 detected but OFF is not confirmed. Do not fallback. Wait.")
+                self.f3_select_fail_reason = "wait_state"
+                return None
+
+            if f2 is not None and f4 is not None:
+                if self.check_f3_between_f2_f4(f2, f3, f4):
+                    return self.make_f3_selection(f3, "direct_f3_verified_f2_f4")
+
+            if f2 is not None:
+                if self.check_button_distance("F2", f2, "F3", f3, reason="f3_verify"):
+                    return self.make_f3_selection(f3, "direct_f3_verified_f2_only")
+
+            if f4 is not None:
+                if self.check_button_distance("F3", f3, "F4", f4, reason="f3_verify"):
+                    return self.make_f3_selection(f3, "direct_f3_verified_f4_only")
+
+            if self.is_f3_stable_recently():
+                return self.make_f3_selection(f3, "direct_f3_stable_only")
+
+            rospy.logwarn("[f3_select] F3 is OFF but geometry/stability check failed. Re-observe if possible.")
+            self.f3_select_fail_reason = "need_reobserve"
+            return None
+
+        # 2) F3가 현재 인식되지 않은 경우: F2/F4가 둘 다 정상일 때만 중간 좌표 추정.
+        if f2 is not None and f4 is not None:
+            if self.check_button_distance("F2", f2, "F4", f4, reason="f3_fallback"):
+                return self.estimate_f3_from_f2_f4(f2, f4, source="estimated_from_current_f2_f4")
+
+        rospy.logwarn_throttle(1.0, "[f3_select] F3 not detected and F2/F4 fallback unavailable. Re-observe if possible.")
+        self.f3_select_fail_reason = "need_reobserve"
+        return None
+
+    def apply_target_offset(self, info):
+        source = str(info.get("source", "unknown"))
+        ox = self.target_offset_x
+        oy = self.target_offset_y
+        oz = self.target_offset_z
+
+        # F2/F4 중간 추정 좌표는 버튼 가로 방향 보정으로 밀리면 F2 쪽으로 갈 수 있으므로 x offset은 제외한다.
+        if source == "estimated_from_current_f2_f4":
+            ox = 0.0
+
+        return info["x"] + ox, info["y"] + oy, info["z"] + oz
+
+    def move_to_reobserve_pose(self):
+        if not self.enable_moveit or self.arm_group is None:
+            rospy.logwarn("[reobserve] MoveIt is not available; cannot move to reobserve pose")
+            return False
+
+        rospy.logwarn(
+            "[reobserve] move to re-detection pose. Revolute2=%.3f Revolute5=%.3f. Detection paused while moving.",
+            self.reobserve_pose_joint_map["Revolute2"], self.reobserve_pose_joint_map["Revolute5"]
+        )
+        self.detection_paused = True
+        self.clear_detection_buffers()
+        ok = self.move_to_joint_map(self.reobserve_pose_joint_map, label="F3_reobserve", prefix="Move to F3 reobserve pose")
+        rospy.sleep(self.reobserve_settle_wait)
+        self.clear_detection_buffers()
+        self.detection_paused = False
+        rospy.logwarn("[reobserve] pose move done ok=%s. Detection resumed after buffer clear.", str(ok))
+        return bool(ok)
 
     def print_detected_targets_log(self):
         if not self.detected_targets:
@@ -504,6 +766,52 @@ class YoloObjectTFDetector:
             rospy.sleep(self.button_state_poll_dt)
 
         rospy.logwarn("[button_state] %s ON->OFF transition timeout", target_label)
+        return False
+
+    def wait_for_button_off_without_motion(self, label="F3"):
+        """
+        F3가 이미 ON인 상태로 인식된 경우, 로봇팔을 움직이지 않고 OFF가 될 때까지 기다린다.
+        """
+        target_label = str(label).strip().upper()
+        timeout = self.button_state_after_push_timeout
+        required = max(1, self.button_state_required_count)
+
+        rospy.loginfo(
+            "[button_state] %s already ON. wait OFF without arm motion, timeout=%.1fs, required=%d",
+            target_label, timeout, required
+        )
+
+        off_count = 0
+        start_t = time.time()
+        while not rospy.is_shutdown() and (time.time() - start_t) < timeout:
+            state, conf = self.detect_button_state_once(target_label)
+
+            if state is None:
+                rospy.loginfo_throttle(0.5, "[button_state] %s not detected while waiting OFF", target_label)
+                rospy.sleep(self.button_state_poll_dt)
+                continue
+
+            rospy.loginfo_throttle(
+                0.3,
+                "[button_state] %s state=%s conf=%.2f waiting_off_without_motion",
+                target_label, state, conf
+            )
+
+            if conf < self.button_state_min_conf:
+                rospy.sleep(self.button_state_poll_dt)
+                continue
+
+            if state == "off":
+                off_count += 1
+                if off_count >= required:
+                    rospy.loginfo("[button_state] %s OFF confirmed without arm motion", target_label)
+                    return True
+            else:
+                off_count = 0
+
+            rospy.sleep(self.button_state_poll_dt)
+
+        rospy.logwarn("[button_state] %s OFF wait timeout without arm motion", target_label)
         return False
 
     def get_current_q2_q3_raw(self):
@@ -844,33 +1152,16 @@ class YoloObjectTFDetector:
             self.print_detected_targets_log()
             return
 
-        # ==========================================================
-        # 목표 버튼 정보 결정
-        # 1) 요청한 버튼이 직접 검출되어 있으면 그 좌표 사용
-        # 2) F3가 직접 검출되지 않았고 F2/F4가 있으면 중간 좌표 사용
-        # 3) 둘 다 안 되면 기존처럼 다시 대기
-        # ==========================================================
-        if cmd in self.detected_targets:
-            info = self.detected_targets[cmd]
-            rospy.loginfo("[target_select] Use directly detected target: %s", cmd)
-
+        if cmd == "F3":
+            info = self.select_f3_target()
+            if info is None:
+                if self.f3_select_fail_reason == "need_reobserve" and not self.f3_reobserve_attempted:
+                    self.f3_reobserve_attempted = True
+                    self.move_to_reobserve_pose()
+                self.pending_target_label = cmd
+                return
         else:
-            if cmd == "F3":
-                info = self.estimate_f3_from_f2_f4()
-
-                if info is None:
-                    rospy.logwarn_throttle(
-                        1.0,
-                        "Requested label [F3] is not detected, and F2/F4 fallback is not available. Keep waiting..."
-                    )
-                    self.pending_target_label = cmd
-                    return
-
-                # 중요: fallback 좌표가 만들어졌으면 여기서 return 하지 않고
-                # 아래 이동 코드로 그대로 내려가야 한다.
-                rospy.logwarn("[target_select] Use estimated F3 target from F2/F4 fallback.")
-
-            else:
+            if cmd not in self.detected_targets:
                 rospy.logwarn_throttle(
                     1.0,
                     "Requested label [%s] is not currently detected yet. Keep waiting...",
@@ -878,21 +1169,45 @@ class YoloObjectTFDetector:
                 )
                 self.pending_target_label = cmd
                 return
+            info = dict(self.detected_targets[cmd])
+            info["source"] = "direct_detected_%s" % cmd
+            rospy.loginfo("[target_select] Use directly detected target: %s", cmd)
+
+        source = str(info.get("source", "unknown"))
 
         rospy.loginfo(
-            "RAW target [%s]: x=%.3f y=%.3f z=%.3f state=%s(%.2f)",
+            "RAW target [%s]: x=%.3f y=%.3f z=%.3f state=%s(%.2f) source=%s",
             cmd,
             info["x"], info["y"], info["z"],
-            info["pressed_label"], info["pressed_conf"]
+            info.get("pressed_label", "unknown"), float(info.get("pressed_conf", 0.0)),
+            source
         )
 
-        x = info["x"] + self.target_offset_x
-        y = info["y"] + self.target_offset_y
-        z = info["z"] + self.target_offset_z
+        # F3가 이미 ON이면 로봇팔을 움직이지 않고 OFF만 기다린다.
+        if cmd == "F3" and source == "direct_f3_already_on_wait_off":
+            rospy.loginfo("[arm_mission] F3 already ON. Skip movement and wait until OFF.")
+            off_ok = self.wait_for_button_off_without_motion(label=cmd)
+            if off_ok:
+                rospy.sleep(3.0)
+                rospy.loginfo(
+                    "[arm_mission] F3 OFF confirmed without motion. publish event: %s -> %s",
+                    self.arm_mission_event_topic,
+                    self.arm_mission_done_event
+                )
+                self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
+                self.stop_visualization()
+                finish_ok = self.move_to_finish_pose_after_button(label=cmd)
+                if not finish_ok:
+                    rospy.logwarn("[arm_mission] finish pose move failed after already-ON wait")
+            else:
+                rospy.logwarn("[arm_mission] F3 was already ON, but OFF was not confirmed. SEXY_BUTTON event not published.")
+            return
+
+        x, y, z = self.apply_target_offset(info)
 
         rospy.loginfo(
-            "FINAL target [%s]: x=%.3f y=%.3f z=%.3f after offset",
-            cmd, x, y, z
+            "FINAL target [%s]: x=%.3f y=%.3f z=%.3f after offset | source=%s",
+            cmd, x, y, z, source
         )
 
         mission_ok = self.move_to_target_then_compensate(x, y, z, label=cmd)
@@ -939,14 +1254,18 @@ class YoloObjectTFDetector:
                 dbg = color_image.copy()
                 stamp = self.latest_color_stamp if self.latest_color_stamp is not None else rospy.Time.now()
 
-                detect_result = self.detect_model.predict(
-                    source=color_image,
-                    conf=self.detect_conf_thresh,
-                    iou=self.detect_iou_thresh,
-                    verbose=False
-                )[0]
+                detect_result = None
+                if self.detection_paused:
+                    rospy.loginfo_throttle(0.5, "[detection] paused while arm is moving for re-observation")
+                else:
+                    detect_result = self.detect_model.predict(
+                        source=color_image,
+                        conf=self.detect_conf_thresh,
+                        iou=self.detect_iou_thresh,
+                        verbose=False
+                    )[0]
 
-                if detect_result is not None and detect_result.boxes is not None and len(detect_result.boxes) > 0:
+                if (not self.detection_paused) and detect_result is not None and detect_result.boxes is not None and len(detect_result.boxes) > 0:
                     names = detect_result.names
                     for box in detect_result.boxes:
                         cls_id = int(box.cls[0].item())
