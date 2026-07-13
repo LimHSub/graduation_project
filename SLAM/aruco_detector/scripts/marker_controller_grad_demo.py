@@ -78,19 +78,19 @@ class MarkerPoseControllerGradDemo:
         self.approach_stage1_dist = float(rospy.get_param("~approach_stage1_dist", 1.85))
         self.approach_stage1_5_dist = float(rospy.get_param("~approach_stage1_5_dist", 1.00))
         self.approach_stage2_dist = float(rospy.get_param("~approach_stage2_dist", 0.85))
-        self.approach_stop_dist = float(rospy.get_param("~approach_stop_dist", 0.55))
+        self.approach_stop_dist = float(rospy.get_param("~approach_stop_dist", 0.55)) # 0.45 
 
         self.approach_target_y_far = float(rospy.get_param("~approach_target_y_far", 0.0))
-        self.approach_target_y_mid = float(rospy.get_param("~approach_target_y_mid", -0.3))
-        self.approach_target_y_mid2 = float(rospy.get_param("~approach_target_y_mid2", -0.1))
-        self.approach_target_y_near = float(rospy.get_param("~approach_target_y_near", 0.3))
+        self.approach_target_y_mid = float(rospy.get_param("~approach_target_y_mid", -0.3))  # -0.5
+        self.approach_target_y_mid2 = float(rospy.get_param("~approach_target_y_mid2", -0.2)) # -0.2
+        self.approach_target_y_near = float(rospy.get_param("~approach_target_y_near", 0.3)) # 0.3
 
         # 후진 도킹
         self.retreat_stage1_limit = float(rospy.get_param("~retreat_stage1_limit", 0.85))
-        self.retreat_finish_dist = float(rospy.get_param("~retreat_finish_dist", 1.50))
+        self.retreat_finish_dist = float(rospy.get_param("~retreat_finish_dist", 1.70))
 
-        self.retreat_target_y_close = float(rospy.get_param("~retreat_target_y_close", 0.3))
-        self.retreat_target_y_far = float(rospy.get_param("~retreat_target_y_far", -0.40))
+        self.retreat_target_y_close = float(rospy.get_param("~retreat_target_y_close", 0.20))
+        self.retreat_target_y_far = float(rospy.get_param("~retreat_target_y_far", -0.25))
 
         # Twist 속도
         self.forward_speed = float(rospy.get_param("~forward_speed", 0.10))
