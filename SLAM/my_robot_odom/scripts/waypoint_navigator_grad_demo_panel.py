@@ -15,7 +15,7 @@ from tf.transformations import quaternion_from_euler
 
 from std_msgs.msg import Bool, Int32, String
 from std_srvs.srv import Trigger, TriggerResponse, SetBool, SetBoolResponse, Empty
-from my_robot_odom.srv import SetMode, GotoWaypoint, GotoWaypointResponse
+from my_robot_odom.srv import SetMode, GotoWaypoint, GotoWaypointResponse, PreciseArrival
 
 
 UART_PORT = "/dev/ttyACM1"
@@ -152,6 +152,16 @@ class HybridNavigator:
         self.clear_costmaps_srv = rospy.get_param("~clear_costmaps_srv", "/move_base/clear_costmaps")
         self.clear_costmaps_wait = float(rospy.get_param("~clear_costmaps_wait", 0.3))
 
+        # ===== precise arrival params 추가 =====
+        # move_base 성공 후 waypoint별로 정밀 도착 보정이 필요한 경우에만 호출한다.
+        # waypoints.yaml에서 precise_arrival: true 인 waypoint에 적용된다.
+        self.precise_arrival_srv = rospy.get_param("~precise_arrival_srv", "/precise_arrival/start")
+        self.default_precise_arrival = bool(rospy.get_param("~default_precise_arrival", False))
+        self.precise_arrival_max_time = float(rospy.get_param("~precise_arrival_max_time", 3.0))
+        self.precise_arrival_xy_tolerance = float(rospy.get_param("~precise_arrival_xy_tolerance", 0.05))
+        self.precise_arrival_yaw_tolerance = float(rospy.get_param("~precise_arrival_yaw_tolerance", 0.052))
+        self.precise_arrival_wait_timeout = float(rospy.get_param("~precise_arrival_wait_timeout", 2.0))
+
         # =========================
         # Internal State
         # =========================
@@ -224,6 +234,10 @@ class HybridNavigator:
         self.clear_costmaps = None
         self._ensure_clear_costmaps_service()
 
+        # ===== precise_arrival service proxy 추가 =====
+        self.precise_arrival = None
+        self._ensure_precise_arrival_service()
+
         # done subscribers
         rospy.Subscriber(self.panel_mission_done_topic, Int32, self._on_panel_mission_done, queue_size=1)
         rospy.Subscriber(self.marker_mission_done_topic, Int32, self._on_marker_mission_done, queue_size=1)
@@ -263,6 +277,8 @@ class HybridNavigator:
         rospy.loginfo("[hybrid_nav] event_topic=%s", self.event_topic)
         rospy.loginfo("[hybrid_nav] clear_costmaps_before_goto=%s", str(self.clear_costmaps_before_goto))
         rospy.loginfo("[hybrid_nav] clear_costmaps_srv=%s", self.clear_costmaps_srv)
+        rospy.loginfo("[hybrid_nav] precise_arrival_srv=%s", self.precise_arrival_srv)
+        rospy.loginfo("[hybrid_nav] default_precise_arrival=%s", str(self.default_precise_arrival))
 
     # =========================================================
     # Debug mode helpers
@@ -330,6 +346,34 @@ class HybridNavigator:
         if wp is None:
             return None
         return int(wp.get("mission", index + 1))
+
+    def _wp_yaw(self, index):
+        wp = self._get_wp(index)
+        if wp is None:
+            return 0.0
+
+        if "yaw" in wp:
+            return float(wp["yaw"])
+
+        return math.radians(float(wp.get("yaw_deg", 0.0)))
+
+    def _wp_precise_arrival(self, index):
+        """
+        waypoint별 정밀 도착 적용 여부.
+        waypoints.yaml에 precise_arrival: true 를 넣은 waypoint만 정밀 보정한다.
+        기본값은 ~default_precise_arrival 파라미터를 따른다.
+        """
+        wp = self._get_wp(index)
+        if wp is None:
+            return False
+
+        return bool(wp.get("precise_arrival", self.default_precise_arrival))
+
+    def _wp_precise_param(self, index, key, default_value):
+        wp = self._get_wp(index)
+        if wp is None:
+            return default_value
+        return float(wp.get(key, default_value))
 
     def _resolve_manual_marker_mission(self):
         """
@@ -423,6 +467,19 @@ class HybridNavigator:
         except Exception as e:
             rospy.logwarn("[hybrid_nav] clear_costmaps not available: %s", e)
             self.clear_costmaps = None
+            return False
+
+    def _ensure_precise_arrival_service(self):
+        if self.precise_arrival is not None:
+            return True
+        try:
+            rospy.wait_for_service(self.precise_arrival_srv, timeout=self.precise_arrival_wait_timeout)
+            self.precise_arrival = rospy.ServiceProxy(self.precise_arrival_srv, PreciseArrival)
+            rospy.loginfo("[hybrid_nav] precise_arrival connected: %s", self.precise_arrival_srv)
+            return True
+        except Exception as e:
+            rospy.logwarn("[hybrid_nav] precise_arrival not available: %s", e)
+            self.precise_arrival = None
             return False
 
     # =========================================================
@@ -539,6 +596,59 @@ class HybridNavigator:
             return False
 
     # =========================================================
+    # Precise Arrival
+    # =========================================================
+    def _call_precise_arrival(self, index):
+        """
+        move_base 성공 후 waypoint별 정밀 도착 보정 서비스 호출.
+
+        중요:
+          - precise_arrival 서비스에서 success/best_effort/fail 계열 어떤 결과가 오더라도
+            '응답을 받은 것' 자체를 완료 신호 수신으로 본다.
+          - 따라서 응답을 받으면 waypoint_navigator는 기존 NAV_REACHED 이벤트를 발행한다.
+          - 단, 서비스 연결 실패/호출 예외처럼 응답 자체를 못 받은 경우는 False를 반환한다.
+        """
+        if not self._wp_precise_arrival(index):
+            return True, "precise_arrival skipped"
+
+        wp = self._get_wp(index)
+        if wp is None:
+            return False, "invalid waypoint for precise_arrival"
+
+        if not self._ensure_precise_arrival_service():
+            return False, "precise_arrival service unavailable"
+
+        target_x = float(wp["x"])
+        target_y = float(wp["y"])
+        target_yaw = self._wp_yaw(index)
+
+        max_time = self._wp_precise_param(index, "precise_max_time", self.precise_arrival_max_time)
+        xy_tol = self._wp_precise_param(index, "precise_xy_tolerance", self.precise_arrival_xy_tolerance)
+        yaw_tol = self._wp_precise_param(index, "precise_yaw_tolerance", self.precise_arrival_yaw_tolerance)
+
+        rospy.loginfo(
+            "[hybrid_nav] precise_arrival start idx=%d x=%.3f y=%.3f yaw=%.3f max_time=%.2f xy_tol=%.3f yaw_tol=%.3f",
+            index, target_x, target_y, target_yaw, max_time, xy_tol, yaw_tol
+        )
+
+        try:
+            resp = self.precise_arrival(target_x, target_y, target_yaw, max_time, xy_tol, yaw_tol)
+
+            rospy.loginfo(
+                "[hybrid_nav] precise_arrival response idx=%d success=%s result=%s final_xy=%.3f final_yaw=%.3f",
+                index, str(resp.success), str(resp.result),
+                float(resp.final_xy_error), float(resp.final_yaw_error)
+            )
+
+            # success, best_effort, fail 계열과 관계없이 응답을 받았으면 True
+            return True, str(resp.result)
+
+        except Exception as e:
+            rospy.logwarn("[hybrid_nav] precise_arrival call failed: %s", e)
+            self.precise_arrival = None
+            return False, str(e)
+
+    # =========================================================
     # Goal Helpers
     # =========================================================
     def _build_goal(self, wp):
@@ -616,6 +726,27 @@ class HybridNavigator:
                 self.last_reached_idx = self.current_index
                 mission = self._wp_mission(self.current_index)
                 self.pending_marker_mission = mission
+
+                # ===== precise_arrival 추가 =====
+                # move_base가 성공한 뒤, waypoint에 precise_arrival: true가 있으면
+                # 정밀 도착 보정 서비스를 먼저 호출한다.
+                # 서비스에서 응답만 받으면 success/best_effort/fail 결과와 관계없이
+                # 아래 기존 완료 처리 흐름으로 진행한다.
+                precise_ok, precise_msg = self._call_precise_arrival(self.current_index)
+                if not precise_ok:
+                    rospy.logwarn("[hybrid_nav] precise_arrival no response -> nav failed: %s", precise_msg)
+                    self.last_goal_result_status = GoalStatus.ABORTED
+                    self.state = self.ST_IDLE
+                    self.running = False
+                    self._uart_write("NAV_FAILED:%d" % (self.current_index + 1))
+
+                    event_index = self._nav_event_index(self.current_index)
+                    self._publish_event("NAV_FAILED:%d" % event_index)
+
+                    self._publish_vision_debug_mode("off")
+                    return
+
+                rospy.loginfo("[hybrid_nav] precise_arrival completed/accepted: %s", precise_msg)
 
                 # ===== goto 구간 주행 중간 waypoint 도착 처리 추가 =====
                 # 예: goto index 0 -> waypoint 0 도착 시에는 완료 이벤트를 보내지 않고,
