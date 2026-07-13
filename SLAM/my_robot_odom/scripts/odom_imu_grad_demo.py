@@ -19,7 +19,7 @@ from my_robot_odom.srv import SetMode, SetModeResponse
 
 from evdev import InputDevice, ecodes
 
-SERIAL_PORT = '/dev/ttyACM0'
+SERIAL_PORT = '/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_0668FF565087534867135942-if02'
 BAUDRATE = 115200
 WHEEL_RADIUS_L = 0.0965
 WHEEL_RADIUS_R = 0.0965
@@ -36,7 +36,7 @@ MODE_DOCKING  = 2
 class UnifiedController:
     def __init__(self):
         # --- 파라미터 ---
-        self.serial_port = rospy.get_param('~serial_port', SERIAL_PORT)
+        self.serial_port = rospy.get_param('/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_0668FF565087534867135942-if02', SERIAL_PORT)
         self.baudrate = rospy.get_param('~baudrate', BAUDRATE)
         self.mode = rospy.get_param('~mode_initial', MODE_WAYPOINT)
         self.allow_keyboard = rospy.get_param('~allow_keyboard_override', False)
@@ -408,7 +408,7 @@ class UnifiedController:
     def _gamepad_loop(self):
         while not rospy.is_shutdown() and self.running:
             try:
-                dev = InputDevice("/dev/input/event28")
+                dev = InputDevice("/dev/input/by-id/usb-Logitech_Wireless_Gamepad_F710_46789A23-event-joystick")
                 rospy.loginfo(f"[GAMEPAD] Using {dev.path} ({dev.name})")
 
                 for event in dev.read_loop():
