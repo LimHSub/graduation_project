@@ -18,8 +18,9 @@ class SystemSequenceManager:
       2) 패널 기반 주행
       3) 로봇팔 panel 버튼 누르기
       4) 마커 기반 도킹
-      5) 로봇팔 button 버튼 누르기
+      5) 로봇팔 button 버튼 누르기 + 맵 전환 병렬 수행
       6) 마커 기반 후진
+      7) waypoint index 1 주행
 
     사용하는 서비스:
       - /waypoint_navigator/goto
@@ -27,11 +28,28 @@ class SystemSequenceManager:
       - /arm_mission/panel
       - /waypoint_navigator/marker_start_2
       - /arm_mission/button
+      - /waypoint_navigator/switch_next_map
       - /waypoint_navigator/marker_start_3
 
     기다리는 event:
-      - /waypoint_navigator/event : NAV_REACHED:0, PANEL_DONE:3, MARKER_FWD_DONE:3, MARKER_BACK_DONE:3, NAV_FAILED, STOPPED
-      - /arm_mission/event        : SEXY_PANEL, SEXY_BUTTON
+      - /waypoint_navigator/event :
+          NAV_REACHED:0
+          PANEL_DONE:3
+          MARKER_FWD_DONE:3
+          MAP_SWITCHED:B
+          MARKER_BACK_DONE:3
+          NAV_REACHED:1
+          NAV_FAILED
+          STOPPED
+
+      - /arm_mission/event :
+          SEXY_PANEL
+          SEXY_BUTTON
+
+    수정 사항:
+      - waypoint 주행 단계에서는 NAV_FAILED가 들어와도 바로 실패 처리하지 않음.
+      - 이후 NAV_REACHED가 들어오면 다음 시퀀스로 진행함.
+      - 단, 마커 주행 단계에서는 기존처럼 NAV_FAILED를 실패 처리함.
     """
 
     ST_IDLE = "IDLE"
@@ -39,8 +57,13 @@ class SystemSequenceManager:
     ST_PANEL_APPROACH = "PANEL_APPROACH"
     ST_ARM_PANEL = "ARM_PANEL"
     ST_MARKER_DOCKING = "MARKER_DOCKING"
+
+    ST_BUTTON_AND_MAP_SWITCH = "BUTTON_AND_MAP_SWITCH"
+
     ST_ARM_BUTTON = "ARM_BUTTON"
     ST_MARKER_BACK = "MARKER_BACK"
+    ST_NAV_TO_NEXT = "NAV_TO_NEXT"
+
     ST_DONE = "DONE"
     ST_ERROR = "ERROR"
 
@@ -49,28 +72,38 @@ class SystemSequenceManager:
         # Params
         # =====================================================
         self.start_index = int(rospy.get_param("~start_index", 0))
+        self.next_index = int(rospy.get_param("~next_index", 1))
 
         self.panel_done_event = rospy.get_param("~panel_done_event", "PANEL_DONE:3")
         self.arm_panel_done_event = rospy.get_param("~arm_panel_done_event", "SEXY_PANEL")
         self.marker_fwd_done_event = rospy.get_param("~marker_fwd_done_event", "MARKER_FWD_DONE:3")
         self.arm_button_done_event = rospy.get_param("~arm_button_done_event", "SEXY_BUTTON")
+        self.map_switched_event = rospy.get_param("~map_switched_event", "MAP_SWITCHED:B")
         self.marker_back_done_event = rospy.get_param("~marker_back_done_event", "MARKER_BACK_DONE:3")
 
         self.nav_event_topic = rospy.get_param("~nav_event_topic", "/waypoint_navigator/event")
         self.arm_event_topic = rospy.get_param("~arm_event_topic", "/arm_mission/event")
 
         self.goto_srv_name = rospy.get_param("~goto_srv_name", "/waypoint_navigator/goto")
+
         self.marker_start_1_srv_name = rospy.get_param(
             "~marker_start_1_srv_name",
             "/waypoint_navigator/marker_start_1"
         )
+
         self.marker_start_2_srv_name = rospy.get_param(
             "~marker_start_2_srv_name",
             "/waypoint_navigator/marker_start_2"
         )
+
         self.marker_start_3_srv_name = rospy.get_param(
             "~marker_start_3_srv_name",
             "/waypoint_navigator/marker_start_3"
+        )
+
+        self.switch_next_map_srv_name = rospy.get_param(
+            "~switch_next_map_srv_name",
+            "/waypoint_navigator/switch_next_map"
         )
 
         self.arm_panel_srv_name = rospy.get_param("~arm_panel_srv_name", "/arm_mission/panel")
@@ -115,22 +148,30 @@ class SystemSequenceManager:
         self.marker_start_1_srv = None
         self.marker_start_2_srv = None
         self.marker_start_3_srv = None
+        self.switch_next_map_srv = None
         self.arm_panel_srv = None
         self.arm_button_srv = None
 
         rospy.loginfo("[sequence] ready")
         rospy.loginfo("[sequence] nav_event_topic=%s", self.nav_event_topic)
         rospy.loginfo("[sequence] arm_event_topic=%s", self.arm_event_topic)
+
         rospy.loginfo("[sequence] goto_srv=%s", self.goto_srv_name)
         rospy.loginfo("[sequence] marker_start_1_srv=%s", self.marker_start_1_srv_name)
         rospy.loginfo("[sequence] marker_start_2_srv=%s", self.marker_start_2_srv_name)
         rospy.loginfo("[sequence] marker_start_3_srv=%s", self.marker_start_3_srv_name)
+        rospy.loginfo("[sequence] switch_next_map_srv=%s", self.switch_next_map_srv_name)
         rospy.loginfo("[sequence] arm_panel_srv=%s", self.arm_panel_srv_name)
         rospy.loginfo("[sequence] arm_button_srv=%s", self.arm_button_srv_name)
+
+        rospy.loginfo("[sequence] start_index=%d", self.start_index)
+        rospy.loginfo("[sequence] next_index=%d", self.next_index)
+
         rospy.loginfo("[sequence] panel_done_event=%s", self.panel_done_event)
         rospy.loginfo("[sequence] arm_panel_done_event=%s", self.arm_panel_done_event)
         rospy.loginfo("[sequence] marker_fwd_done_event=%s", self.marker_fwd_done_event)
         rospy.loginfo("[sequence] arm_button_done_event=%s", self.arm_button_done_event)
+        rospy.loginfo("[sequence] map_switched_event=%s", self.map_switched_event)
         rospy.loginfo("[sequence] marker_back_done_event=%s", self.marker_back_done_event)
 
         if self.auto_start:
@@ -180,6 +221,10 @@ class SystemSequenceManager:
             rospy.wait_for_service(self.arm_button_srv_name, timeout=self.wait_service_timeout)
             self.arm_button_srv = rospy.ServiceProxy(self.arm_button_srv_name, Trigger)
 
+            rospy.loginfo("[sequence] waiting service: %s", self.switch_next_map_srv_name)
+            rospy.wait_for_service(self.switch_next_map_srv_name, timeout=self.wait_service_timeout)
+            self.switch_next_map_srv = rospy.ServiceProxy(self.switch_next_map_srv_name, Trigger)
+
             rospy.loginfo("[sequence] waiting service: %s", self.marker_start_3_srv_name)
             rospy.wait_for_service(self.marker_start_3_srv_name, timeout=self.wait_service_timeout)
             self.marker_start_3_srv = rospy.ServiceProxy(self.marker_start_3_srv_name, Trigger)
@@ -194,7 +239,19 @@ class SystemSequenceManager:
     # =====================================================
     # Wait helpers
     # =====================================================
-    def _wait_nav_event(self, target_event, timeout=None):
+    def _wait_nav_event(self, target_event, timeout=None, ignore_nav_failed=False):
+        """
+        /waypoint_navigator/event 대기 함수
+
+        ignore_nav_failed=False:
+          - 기존 동작 유지
+          - NAV_FAILED 계열 이벤트가 들어오면 즉시 실패 처리
+
+        ignore_nav_failed=True:
+          - NAV_FAILED 계열 이벤트가 들어와도 실패 처리하지 않음
+          - 이후 target_event가 들어오면 성공 처리
+          - waypoint 주행 단계에서만 사용
+        """
         if timeout is None:
             timeout = self.event_timeout
 
@@ -208,8 +265,14 @@ class SystemSequenceManager:
                     return True
 
                 if self.last_nav_event.startswith("NAV_FAILED"):
-                    rospy.logerr("[sequence] navigation failed event received: %s", self.last_nav_event)
-                    return False
+                    if ignore_nav_failed:
+                        rospy.logwarn(
+                            "[sequence] navigation failed event received but ignored: %s",
+                            self.last_nav_event
+                        )
+                    else:
+                        rospy.logerr("[sequence] navigation failed event received: %s", self.last_nav_event)
+                        return False
 
                 if self.last_nav_event == "STOPPED":
                     rospy.logerr("[sequence] navigation stopped event received")
@@ -334,6 +397,23 @@ class SystemSequenceManager:
             rospy.logerr("[sequence] arm button service call error: %s", e)
             return False
 
+    def _call_switch_next_map(self):
+        rospy.loginfo("[sequence] call switch_next_map")
+
+        try:
+            resp = self.switch_next_map_srv()
+
+            if not resp.success:
+                rospy.logerr("[sequence] switch_next_map failed to start: %s", resp.message)
+                return False
+
+            rospy.loginfo("[sequence] switch_next_map completed: %s", resp.message)
+            return True
+
+        except Exception as e:
+            rospy.logerr("[sequence] switch_next_map service call error: %s", e)
+            return False
+
     def _call_marker_start_3(self):
         rospy.loginfo("[sequence] call marker_start_3")
 
@@ -350,6 +430,90 @@ class SystemSequenceManager:
         except Exception as e:
             rospy.logerr("[sequence] marker_start_3 service call error: %s", e)
             return False
+
+    # =====================================================
+    # Parallel task
+    # =====================================================
+    def _run_button_and_map_switch_parallel(self):
+        """
+        엘리베이터 탑승 완료 후 다음 두 작업을 병렬로 실행한다.
+
+        A. 로봇팔 button 버튼 누르기
+           - /arm_mission/button 호출
+           - /arm_mission/event 에서 SEXY_BUTTON 확인
+
+        B. 맵 전환
+           - /waypoint_navigator/switch_next_map 호출
+           - /waypoint_navigator/event 에서 MAP_SWITCHED:B 확인
+
+        다음 단계 진행 조건:
+           A와 B가 모두 성공해야 True 반환
+        """
+
+        results = {
+            "button": False,
+            "map": False
+        }
+
+        def button_task():
+            rospy.loginfo("[sequence] parallel task A start: arm button mission")
+
+            if not self._call_arm_button():
+                rospy.logerr("[sequence] parallel task A failed: arm button service failed")
+                results["button"] = False
+                return
+
+            if not self._wait_arm_event(self.arm_button_done_event):
+                rospy.logerr(
+                    "[sequence] parallel task A failed while waiting %s",
+                    self.arm_button_done_event
+                )
+                results["button"] = False
+                return
+
+            results["button"] = True
+            rospy.loginfo("[sequence] parallel task A success: arm button mission done")
+
+        def map_task():
+            rospy.loginfo("[sequence] parallel task B start: switch_next_map")
+
+            if not self._call_switch_next_map():
+                rospy.logerr("[sequence] parallel task B failed: switch_next_map service failed")
+                results["map"] = False
+                return
+
+            if not self._wait_nav_event(self.map_switched_event):
+                rospy.logerr(
+                    "[sequence] parallel task B failed while waiting %s",
+                    self.map_switched_event
+                )
+                results["map"] = False
+                return
+
+            results["map"] = True
+            rospy.loginfo("[sequence] parallel task B success: map switched")
+
+        button_thread = threading.Thread(target=button_task)
+        map_thread = threading.Thread(target=map_task)
+
+        button_thread.start()
+        map_thread.start()
+
+        button_thread.join()
+        map_thread.join()
+
+        rospy.loginfo(
+            "[sequence] parallel result: button=%s, map=%s",
+            results["button"],
+            results["map"]
+        )
+
+        if results["button"] and results["map"]:
+            rospy.loginfo("[sequence] both parallel tasks succeeded")
+            return True
+
+        rospy.logerr("[sequence] one or more parallel tasks failed")
+        return False
 
     # =====================================================
     # Main sequence
@@ -383,7 +547,10 @@ class SystemSequenceManager:
 
         nav_reached_event = "NAV_REACHED:%d" % self.start_index
 
-        if not self._wait_nav_event(nav_reached_event):
+        # 수정:
+        # waypoint 주행 중에는 NAV_FAILED가 먼저 들어와도 바로 실패 처리하지 않음.
+        # 이후 NAV_REACHED가 들어오면 정상적으로 다음 단계 진행.
+        if not self._wait_nav_event(nav_reached_event, ignore_nav_failed=True):
             return self._finish_failed("failed while waiting %s" % nav_reached_event)
 
         # -------------------------------------------------
@@ -423,16 +590,13 @@ class SystemSequenceManager:
             return self._finish_failed("failed while waiting %s" % self.marker_fwd_done_event)
 
         # -------------------------------------------------
-        # 5. 로봇팔 button 버튼 누르기
+        # 5. 버튼 누르기 + 맵 전환 병렬 실행
         # -------------------------------------------------
-        self.state = self.ST_ARM_BUTTON
-        rospy.loginfo("[sequence] STEP 5: arm button mission")
+        self.state = self.ST_BUTTON_AND_MAP_SWITCH
+        rospy.loginfo("[sequence] STEP 5: arm button + switch_next_map parallel")
 
-        if not self._call_arm_button():
-            return self._finish_failed("arm button service failed")
-
-        if not self._wait_arm_event(self.arm_button_done_event):
-            return self._finish_failed("failed while waiting %s" % self.arm_button_done_event)
+        if not self._run_button_and_map_switch_parallel():
+            return self._finish_failed("button mission or switch_next_map failed")
 
         # -------------------------------------------------
         # 6. 마커 기반 후진
@@ -446,6 +610,23 @@ class SystemSequenceManager:
         if not self._wait_nav_event(self.marker_back_done_event):
             return self._finish_failed("failed while waiting %s" % self.marker_back_done_event)
 
+        # -------------------------------------------------
+        # 7. 다음 waypoint index 1 주행
+        # -------------------------------------------------
+        self.state = self.ST_NAV_TO_NEXT
+        rospy.loginfo("[sequence] STEP 7: waypoint navigation to next index %d", self.next_index)
+
+        if not self._call_goto(self.next_index):
+            return self._finish_failed("next goto service failed")
+
+        next_nav_reached_event = "NAV_REACHED:%d" % self.next_index
+
+        # 수정:
+        # waypoint 주행 중에는 NAV_FAILED가 먼저 들어와도 바로 실패 처리하지 않음.
+        # 이후 NAV_REACHED가 들어오면 정상적으로 다음 단계 진행.
+        if not self._wait_nav_event(next_nav_reached_event, ignore_nav_failed=True):
+            return self._finish_failed("failed while waiting %s" % next_nav_reached_event)
+
         return self._finish_success()
 
     # =====================================================
@@ -458,7 +639,7 @@ class SystemSequenceManager:
             self.finished = True
             self.failed = False
 
-        rospy.loginfo("[sequence] sequence completed successfully up to STEP 6")
+        rospy.loginfo("[sequence] sequence completed successfully up to STEP 7")
         return True
 
     def _finish_failed(self, reason):
