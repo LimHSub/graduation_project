@@ -59,15 +59,22 @@ class RobotArmMissionManager(object):
 
         # /arm_mission/button 호출 시 yolo_detect_1.py 실행 전에 수행할 시작 자세 이동 sh
         self.button_start_pose_sh = rospy.get_param("~button_start_pose_sh", "/home/inwoong/move_start_pose_right.sh")
-        self.button_start_pose_wait = float(rospy.get_param("~button_start_pose_wait", 1.0))
+        self.button_start_pose_wait = float(rospy.get_param("~button_start_pose_wait", 2.0))
 
-        # yolo_detect_4_ros.py / yolo_detect_1.py가 구독하는 목표 라벨 토픽
+        
+        self.panel_start_pose_sh = rospy.get_param("~panel_start_pose_sh", "/home/inwoong/move_start_pose_panel.sh")
+        self.panel_start_pose_wait = float(rospy.get_param("~panel_start_pose_wait", 2.0))
+# yolo_detect_4_ros.py / yolo_detect_1.py가 구독하는 목표 라벨 토픽
         self.target_label_topic = rospy.get_param("~target_label_topic", "/move_target_label")
         self.panel_target_label = rospy.get_param("~panel_target_label", "up")
         self.button_target_label = rospy.get_param("~button_target_label", "f3")
 
         # 프로세스가 뜬 뒤 YOLO/MoveIt 초기화 시간을 조금 기다린 후 publish
-        self.label_publish_delay = float(rospy.get_param("~label_publish_delay", 6.0))
+        # panel과 button의 초기화/시작자세 흐름이 다르므로 delay를 분리한다.
+        # 기존 ~label_publish_delay 파라미터가 있으면 panel 기본값으로만 사용한다.
+        legacy_label_publish_delay = float(rospy.get_param("~label_publish_delay", 6.0))
+        self.panel_label_publish_delay = float(rospy.get_param("~panel_label_publish_delay", legacy_label_publish_delay))
+        self.button_label_publish_delay = float(rospy.get_param("~button_label_publish_delay", 1.0))
         self.label_publish_repeat = int(rospy.get_param("~label_publish_repeat", 1))
         self.label_publish_interval = float(rospy.get_param("~label_publish_interval", 0.3))
 
@@ -115,6 +122,11 @@ class RobotArmMissionManager(object):
                       self.button_start_pose_sh, self.button_start_pose_wait)
         rospy.loginfo("[robot_arm_manager] target label topic=%s panel_label=%s button_label=%s",
                       self.target_label_topic, self.panel_target_label, self.button_target_label)
+        rospy.loginfo("[robot_arm_manager] label delays panel=%.2fs button=%.2fs repeat=%d interval=%.2fs",
+                      self.panel_label_publish_delay,
+                      self.button_label_publish_delay,
+                      self.label_publish_repeat,
+                      self.label_publish_interval)
 
     # =========================================================
     # State
@@ -281,9 +293,23 @@ class RobotArmMissionManager(object):
     # =========================================================
     # Target label publishing
     # =========================================================
-    def _publish_target_label_later(self, label):
+    def _publish_target_label_later(self, label, delay=None):
+        """
+        YOLO 노드 실행 후 목표 라벨을 지연 publish한다.
+        panel/button별 준비 시간이 달라 delay를 인자로 받는다.
+        """
+        if delay is None:
+            delay = self.panel_label_publish_delay
+
         def worker():
-            rospy.sleep(self.label_publish_delay)
+            if delay > 0.0:
+                rospy.loginfo(
+                    "[robot_arm_manager] wait %.2fs before publishing target label: %s",
+                    delay,
+                    str(label)
+                )
+                rospy.sleep(delay)
+
             for i in range(max(1, self.label_publish_repeat)):
                 if rospy.is_shutdown():
                     return
@@ -353,18 +379,22 @@ class RobotArmMissionManager(object):
             script=self.panel_script,
             args_text=self.panel_args
         )
-        if ok:
-            self._publish_target_label_later(self.panel_target_label)
-        return TriggerResponse(success=ok, message=msg)
+        if not ok:
+            return TriggerResponse(success=False, message=msg)
+        ok_pose, pose_msg = self._run_panel_start_pose_sh()
+        if not ok_pose:
+            self._stop_process(reason="panel start pose failed")
+            return TriggerResponse(success=False, message=pose_msg)
+        self._publish_target_label_later(self.panel_target_label, self.panel_label_publish_delay)
+        return TriggerResponse(success=True, message="%s, %s"%(msg,pose_msg))
 
     def _srv_button(self, _req):
-        # 요구 흐름:
+        # 개선 흐름:
         # /arm_mission/button 호출
         # -> 기존 panel/button 프로세스가 살아있으면 먼저 종료
-        # -> /home/inwoong/move_start_pose_right.sh 실행
-        # -> 1초 대기
-        # -> yolo_detect_1.py 실행
-        # -> label_publish_delay 후 f3 publish
+        # -> yolo_detect_1.py를 먼저 실행하여 YOLO/MoveIt/카메라 구독 초기화 시작
+        # -> 동시에 시작자세 sh 실행 시간을 yolo_detect_1.py 초기화 시간으로 활용
+        # -> 시작자세 sh 완료 후 button_label_publish_delay 뒤 f3 publish
 
         if self._is_process_running():
             rospy.loginfo(
@@ -375,19 +405,120 @@ class RobotArmMissionManager(object):
             if not stop_ok:
                 return TriggerResponse(success=False, message=stop_msg)
 
-        ok_pose, pose_msg = self._run_button_start_pose_sh()
-        if not ok_pose:
-            return TriggerResponse(success=False, message=pose_msg)
-
         ok, msg = self._start_process(
             mission_name="button",
             pkg=self.button_pkg,
             script=self.button_script,
             args_text=self.button_args
         )
-        if ok:
-            self._publish_target_label_later(self.button_target_label)
-        return TriggerResponse(success=ok, message=msg)
+        if not ok:
+            return TriggerResponse(success=False, message=msg)
+
+        ok_pose, pose_msg = self._run_button_start_pose_sh()
+        if not ok_pose:
+            # 시작자세 이동 실패 시 이미 띄운 button 노드를 정리한다.
+            self._stop_process(reason="button start pose failed")
+            return TriggerResponse(success=False, message=pose_msg)
+
+        self._publish_target_label_later(self.button_target_label, self.button_label_publish_delay)
+        return TriggerResponse(success=True, message="%s, %s" % (msg, pose_msg))
+
+    def _run_panel_start_pose_sh(self):
+        """
+        /arm_mission/panel 호출 시 yolo_detect_1.py 실행 전에
+        /home/inwoong/move_start_pose_panel.sh를 실행하여 로봇팔을 버튼 탐색 시작 자세로 이동시킨다.
+        """
+        sh_path = str(self.panel_start_pose_sh)
+
+        if not sh_path:
+            msg = "panel_start_pose_sh is empty"
+            rospy.logerr("[robot_arm_manager] %s", msg)
+            return False, msg
+
+        if not os.path.exists(sh_path):
+            msg = "panel start pose sh not found: %s" % sh_path
+            rospy.logerr("[robot_arm_manager] %s", msg)
+            return False, msg
+
+        try:
+            rospy.loginfo("[robot_arm_manager] run panel start pose sh: %s", sh_path)
+
+            ret = subprocess.call(["bash", sh_path])
+
+            if ret != 0:
+                msg = "panel start pose sh failed, ret=%s" % str(ret)
+                rospy.logerr("[robot_arm_manager] %s", msg)
+                return False, msg
+
+            if self.panel_start_pose_wait > 0.0:
+                rospy.loginfo(
+                    "[robot_arm_manager] wait %.2fs after panel start pose",
+                    self.panel_start_pose_wait
+                )
+                rospy.sleep(self.panel_start_pose_wait)
+
+            rospy.loginfo("[robot_arm_manager] panel start pose done")
+            return True, "panel start pose done"
+
+        except Exception as e:
+            msg = "panel start pose sh exception: %s" % str(e)
+            rospy.logerr("[robot_arm_manager] %s", msg)
+            return False, msg
+
+
+    # =========================================================
+    # Services
+    # =========================================================
+    def _srv_panel(self, _req):
+        ok, msg = self._start_process(
+            mission_name="panel",
+            pkg=self.panel_pkg,
+            script=self.panel_script,
+            args_text=self.panel_args
+        )
+        if not ok:
+            return TriggerResponse(success=False, message=msg)
+        ok_pose, pose_msg = self._run_panel_start_pose_sh()
+        if not ok_pose:
+            self._stop_process(reason="panel start pose failed")
+            return TriggerResponse(success=False, message=pose_msg)
+        self._publish_target_label_later(self.panel_target_label, self.panel_label_publish_delay)
+        return TriggerResponse(success=True, message="%s, %s"%(msg,pose_msg))
+
+    def _srv_panel(self, _req):
+        # 개선 흐름:
+        # /arm_mission/panel 호출
+        # -> 기존 panel/panel 프로세스가 살아있으면 먼저 종료
+        # -> yolo_detect_1.py를 먼저 실행하여 YOLO/MoveIt/카메라 구독 초기화 시작
+        # -> 동시에 시작자세 sh 실행 시간을 yolo_detect_1.py 초기화 시간으로 활용
+        # -> 시작자세 sh 완료 후 panel_label_publish_delay 뒤 f3 publish
+
+        if self._is_process_running():
+            rospy.loginfo(
+                "[robot_arm_manager] stop current process before panel mission: %s",
+                str(self.proc_name)
+            )
+            stop_ok, stop_msg = self._stop_process(reason="switch to panel mission")
+            if not stop_ok:
+                return TriggerResponse(success=False, message=stop_msg)
+
+        ok, msg = self._start_process(
+            mission_name="panel",
+            pkg=self.panel_pkg,
+            script=self.panel_script,
+            args_text=self.panel_args
+        )
+        if not ok:
+            return TriggerResponse(success=False, message=msg)
+
+        ok_pose, pose_msg = self._run_panel_start_pose_sh()
+        if not ok_pose:
+            # 시작자세 이동 실패 시 이미 띄운 panel 노드를 정리한다.
+            self._stop_process(reason="panel start pose failed")
+            return TriggerResponse(success=False, message=pose_msg)
+
+        self._publish_target_label_later(self.panel_target_label, self.panel_label_publish_delay)
+        return TriggerResponse(success=True, message="%s, %s" % (msg, pose_msg))
 
     def _srv_restart_panel(self, _req):
         self._stop_process(reason="restart panel requested")
@@ -398,15 +529,11 @@ class RobotArmMissionManager(object):
             args_text=self.panel_args
         )
         if ok:
-            self._publish_target_label_later(self.panel_target_label)
+            self._publish_target_label_later(self.panel_target_label, self.panel_label_publish_delay)
         return TriggerResponse(success=ok, message=msg)
 
     def _srv_restart_button(self, _req):
         self._stop_process(reason="restart button requested")
-
-        ok_pose, pose_msg = self._run_button_start_pose_sh()
-        if not ok_pose:
-            return TriggerResponse(success=False, message=pose_msg)
 
         ok, msg = self._start_process(
             mission_name="button",
@@ -414,9 +541,16 @@ class RobotArmMissionManager(object):
             script=self.button_script,
             args_text=self.button_args
         )
-        if ok:
-            self._publish_target_label_later(self.button_target_label)
-        return TriggerResponse(success=ok, message=msg)
+        if not ok:
+            return TriggerResponse(success=False, message=msg)
+
+        ok_pose, pose_msg = self._run_button_start_pose_sh()
+        if not ok_pose:
+            self._stop_process(reason="button start pose failed")
+            return TriggerResponse(success=False, message=pose_msg)
+
+        self._publish_target_label_later(self.button_target_label, self.button_label_publish_delay)
+        return TriggerResponse(success=True, message="%s, %s" % (msg, pose_msg))
 
     def _srv_stop(self, _req):
         ok, msg = self._stop_process(reason="service stop requested")
@@ -427,7 +561,8 @@ class RobotArmMissionManager(object):
         msg = (
             "state=%s, running=%s, mission=%s, process=%s, "
             "panel_label=%s, panel_command='rosrun %s %s %s', "
-            "button_label=%s, button_command='rosrun %s %s %s'"
+            "button_label=%s, button_command='rosrun %s %s %s', "
+            "panel_delay=%.2f, button_delay=%.2f"
         ) % (
             self.state,
             str(running),
@@ -440,7 +575,9 @@ class RobotArmMissionManager(object):
             self.button_target_label,
             self.button_pkg,
             self.button_script,
-            self.button_args
+            self.button_args,
+            self.panel_label_publish_delay,
+            self.button_label_publish_delay
         )
         return TriggerResponse(success=True, message=msg)
 
