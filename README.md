@@ -40,8 +40,8 @@ ls /dev/video*
 
 ===========================================================
 
-(정면 방향 - panel) ~/move_start_pose_panel.sh
-
+(정명 방향) ~/move_start_pose_forward.sh
+(패널 누를때 자세 - panel) ~/move_start_pose_panel.sh
 (오른쪽 방향 - button) ~/move_start_pose_right.sh
 
 =======================================================================
