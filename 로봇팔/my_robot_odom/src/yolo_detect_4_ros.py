@@ -33,8 +33,8 @@ class YoloObjectTFDetector:
         rospy.init_node("yolo_object_tf_detector", anonymous=False)
 
         # YOLO models
-        self.detect_model_path = "/home/inwoong/catkin_ws/panel_button_best.pt"
-        self.pressed_model_path = "/home/inwoong/catkin_ws/best2.pt"
+        self.detect_model_path = "/home/park/panel_button_best.pt"
+        self.pressed_model_path = "/home/park/best2.pt"
 
         self.target_class = ""
         self.detect_conf_thresh = 0.5
@@ -162,6 +162,13 @@ class YoloObjectTFDetector:
             queue_size=10,
             latch=True
         )
+
+        # UP 버튼이 이미 눌린(ON) 상태일 때의 처리 설정
+        # 로봇팔을 움직이지 않고 버튼이 OFF가 될 때까지 기다린 뒤 다음 단계 완료 이벤트를 발행한다.
+        self.button_state_after_push_timeout = float(rospy.get_param("~button_state_after_push_timeout", 180.0))
+        self.button_state_poll_dt = float(rospy.get_param("~button_state_poll_dt", 0.15))
+        self.button_state_required_count = int(rospy.get_param("~button_state_required_count", 2))
+        self.button_state_min_conf = float(rospy.get_param("~button_state_min_conf", 0.50))
 
         if not os.path.exists(self.detect_model_path):
             raise FileNotFoundError(self.detect_model_path)
@@ -380,6 +387,110 @@ class YoloObjectTFDetector:
                 info["pressed_label"],
                 info["pressed_conf"]
             )
+
+    def detect_button_state_once(self, target_label):
+        """
+        현재 color image 한 프레임에서 target_label의 ON/OFF 상태만 확인한다.
+        이미 눌린 UP 버튼의 OFF 전환 확인용이며, depth/TF/MoveIt 동작은 수행하지 않는다.
+        """
+        if self.latest_color_image is None:
+            return None, 0.0
+
+        try:
+            color_image = self.latest_color_image.copy()
+            detect_result = self.detect_model.predict(
+                source=color_image,
+                conf=self.detect_conf_thresh,
+                iou=self.detect_iou_thresh,
+                verbose=False
+            )[0]
+
+            if detect_result is None or detect_result.boxes is None or len(detect_result.boxes) <= 0:
+                return None, 0.0
+
+            target_key = str(target_label).strip().upper()
+            best_state = None
+            best_conf = 0.0
+            names = detect_result.names
+
+            for box in detect_result.boxes:
+                cls_id = int(box.cls[0].item())
+                label = str(names.get(cls_id, str(cls_id))).strip().upper()
+                if label != target_key:
+                    continue
+
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                pressed_label, pressed_conf = self.classify_pressed_state(
+                    color_image, x1, y1, x2, y2
+                )
+
+                if pressed_conf > best_conf:
+                    best_state = str(pressed_label).lower()
+                    best_conf = float(pressed_conf)
+
+            return best_state, best_conf
+
+        except Exception as e:
+            rospy.logwarn_throttle(1.0, "detect_button_state_once failed: %s", str(e))
+            return None, 0.0
+
+    def wait_for_button_off_without_motion(self, label="UP"):
+        """
+        UP 버튼이 이미 ON인 경우 로봇팔을 움직이지 않고,
+        OFF 상태가 연속으로 확인될 때까지 기다린다.
+        """
+        target_label = str(label).strip().upper()
+        timeout = self.button_state_after_push_timeout
+        required = max(1, self.button_state_required_count)
+
+        rospy.loginfo(
+            "[button_state] %s already ON. wait OFF without arm motion, timeout=%.1fs, required=%d",
+            target_label, timeout, required
+        )
+
+        off_count = 0
+        start_t = time.time()
+
+        while not rospy.is_shutdown() and (time.time() - start_t) < timeout:
+            state, conf = self.detect_button_state_once(target_label)
+
+            if state is None:
+                rospy.loginfo_throttle(
+                    0.5,
+                    "[button_state] %s not detected while waiting OFF",
+                    target_label
+                )
+                rospy.sleep(self.button_state_poll_dt)
+                continue
+
+            rospy.loginfo_throttle(
+                0.3,
+                "[button_state] %s state=%s conf=%.2f waiting_off_without_motion",
+                target_label, state, conf
+            )
+
+            if conf < self.button_state_min_conf:
+                rospy.sleep(self.button_state_poll_dt)
+                continue
+
+            if state == "off":
+                off_count += 1
+                if off_count >= required:
+                    rospy.loginfo(
+                        "[button_state] %s OFF confirmed without arm motion",
+                        target_label
+                    )
+                    return True
+            else:
+                off_count = 0
+
+            rospy.sleep(self.button_state_poll_dt)
+
+        rospy.logwarn(
+            "[button_state] %s OFF wait timeout without arm motion",
+            target_label
+        )
+        return False
 
     def reset_current_debug(self, label="target", baseline=None):
         if not self.current_debug_enable:
@@ -943,6 +1054,22 @@ class YoloObjectTFDetector:
         info = self.detected_targets[cmd]
         rospy.loginfo("RAW target [%s]: x=%.3f y=%.3f z=%.3f state=%s(%.2f)",
                       cmd, info["x"], info["y"], info["z"], info["pressed_label"], info["pressed_conf"])
+
+        # UP 버튼이 이미 ON이면 누르지 않고 즉시 다음 단계로 넘어간다.
+        pressed_state = str(info.get("pressed_label", "unknown")).strip().lower()
+        pressed_conf = float(info.get("pressed_conf", 0.0))
+        if cmd == "UP" and pressed_state == "on" and pressed_conf >= self.button_state_min_conf:
+            rospy.loginfo(
+                "[arm_mission] UP already ON. Skip all arm motion and publish event immediately: %s -> %s",
+                self.arm_mission_event_topic,
+                self.arm_mission_done_event
+            )
+            self.pub_arm_mission_event.publish(
+                String(data=self.arm_mission_done_event)
+            )
+            self.stop_visualization()
+            return
+
         cam_x = info.get("cam_x", 0.0)
         cam_y = info.get("cam_y", 0.0)
         cam_z = info.get("cam_z", 0.0)
