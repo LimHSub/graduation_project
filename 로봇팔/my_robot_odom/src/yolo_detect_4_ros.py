@@ -163,12 +163,10 @@ class YoloObjectTFDetector:
             latch=True
         )
 
-        # UP 버튼이 이미 눌린(ON) 상태일 때의 처리 설정
-        # 로봇팔을 움직이지 않고 버튼이 OFF가 될 때까지 기다린 뒤 다음 단계 완료 이벤트를 발행한다.
-        self.button_state_after_push_timeout = float(rospy.get_param("~button_state_after_push_timeout", 180.0))
-        self.button_state_poll_dt = float(rospy.get_param("~button_state_poll_dt", 0.15))
-        self.button_state_required_count = int(rospy.get_param("~button_state_required_count", 2))
+        # UP 버튼 상태 판단 설정
         self.button_state_min_conf = float(rospy.get_param("~button_state_min_conf", 0.50))
+        self.done_event_publish_count = int(rospy.get_param("~done_event_publish_count", 3))
+        self.done_event_publish_interval = float(rospy.get_param("~done_event_publish_interval", 0.10))
 
         if not os.path.exists(self.detect_model_path):
             raise FileNotFoundError(self.detect_model_path)
@@ -388,109 +386,43 @@ class YoloObjectTFDetector:
                 info["pressed_conf"]
             )
 
-    def detect_button_state_once(self, target_label):
-        """
-        현재 color image 한 프레임에서 target_label의 ON/OFF 상태만 확인한다.
-        이미 눌린 UP 버튼의 OFF 전환 확인용이며, depth/TF/MoveIt 동작은 수행하지 않는다.
-        """
-        if self.latest_color_image is None:
-            return None, 0.0
+    def normalize_button_state(self, state):
+        """분류 모델의 클래스 이름을 ON/OFF로 통일한다."""
+        raw = str(state).strip().lower().replace("-", "_").replace(" ", "_")
 
-        try:
-            color_image = self.latest_color_image.copy()
-            detect_result = self.detect_model.predict(
-                source=color_image,
-                conf=self.detect_conf_thresh,
-                iou=self.detect_iou_thresh,
-                verbose=False
-            )[0]
+        on_aliases = {
+            "on", "pressed", "press", "active", "selected",
+            "button_on", "up_on", "1", "true"
+        }
+        off_aliases = {
+            "off", "not_pressed", "unpressed", "released", "inactive",
+            "button_off", "up_off", "0", "false"
+        }
 
-            if detect_result is None or detect_result.boxes is None or len(detect_result.boxes) <= 0:
-                return None, 0.0
+        if raw in on_aliases:
+            return "on"
+        if raw in off_aliases:
+            return "off"
+        return "unknown"
 
-            target_key = str(target_label).strip().upper()
-            best_state = None
-            best_conf = 0.0
-            names = detect_result.names
-
-            for box in detect_result.boxes:
-                cls_id = int(box.cls[0].item())
-                label = str(names.get(cls_id, str(cls_id))).strip().upper()
-                if label != target_key:
-                    continue
-
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                pressed_label, pressed_conf = self.classify_pressed_state(
-                    color_image, x1, y1, x2, y2
-                )
-
-                if pressed_conf > best_conf:
-                    best_state = str(pressed_label).lower()
-                    best_conf = float(pressed_conf)
-
-            return best_state, best_conf
-
-        except Exception as e:
-            rospy.logwarn_throttle(1.0, "detect_button_state_once failed: %s", str(e))
-            return None, 0.0
-
-    def wait_for_button_off_without_motion(self, label="UP"):
-        """
-        UP 버튼이 이미 ON인 경우 로봇팔을 움직이지 않고,
-        OFF 상태가 연속으로 확인될 때까지 기다린다.
-        """
-        target_label = str(label).strip().upper()
-        timeout = self.button_state_after_push_timeout
-        required = max(1, self.button_state_required_count)
-
+    def publish_arm_mission_done(self, reason="done"):
+        """완료 이벤트를 여러 번 발행해 상위 시퀀스가 확실히 수신하도록 한다."""
+        count = max(1, self.done_event_publish_count)
         rospy.loginfo(
-            "[button_state] %s already ON. wait OFF without arm motion, timeout=%.1fs, required=%d",
-            target_label, timeout, required
+            "[arm_mission] publish done event: topic=%s event=%s reason=%s count=%d",
+            self.arm_mission_event_topic,
+            self.arm_mission_done_event,
+            reason,
+            count
         )
-
-        off_count = 0
-        start_t = time.time()
-
-        while not rospy.is_shutdown() and (time.time() - start_t) < timeout:
-            state, conf = self.detect_button_state_once(target_label)
-
-            if state is None:
-                rospy.loginfo_throttle(
-                    0.5,
-                    "[button_state] %s not detected while waiting OFF",
-                    target_label
-                )
-                rospy.sleep(self.button_state_poll_dt)
-                continue
-
-            rospy.loginfo_throttle(
-                0.3,
-                "[button_state] %s state=%s conf=%.2f waiting_off_without_motion",
-                target_label, state, conf
+        for idx in range(count):
+            self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
+            rospy.loginfo(
+                "[arm_mission] done event published %d/%d: %s",
+                idx + 1, count, self.arm_mission_done_event
             )
-
-            if conf < self.button_state_min_conf:
-                rospy.sleep(self.button_state_poll_dt)
-                continue
-
-            if state == "off":
-                off_count += 1
-                if off_count >= required:
-                    rospy.loginfo(
-                        "[button_state] %s OFF confirmed without arm motion",
-                        target_label
-                    )
-                    return True
-            else:
-                off_count = 0
-
-            rospy.sleep(self.button_state_poll_dt)
-
-        rospy.logwarn(
-            "[button_state] %s OFF wait timeout without arm motion",
-            target_label
-        )
-        return False
+            if idx < count - 1:
+                rospy.sleep(self.done_event_publish_interval)
 
     def reset_current_debug(self, label="target", baseline=None):
         if not self.current_debug_enable:
@@ -1000,8 +932,7 @@ class YoloObjectTFDetector:
                     rospy.loginfo("[arm_mission] contact detected → stop")
                     
                     rospy.sleep(0.2)
-                    rospy.loginfo("[arm_mission] publish SEXY_PANEL (after contact)")
-                    self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
+                    self.publish_arm_mission_done(reason="BUTTON_CONTACT")
 
                     # 패널 미션 완료 후 OpenCV 시각화 창을 종료하여 CPU/GPU 점유를 줄인다.
                     self.stop_visualization()
@@ -1055,20 +986,39 @@ class YoloObjectTFDetector:
         rospy.loginfo("RAW target [%s]: x=%.3f y=%.3f z=%.3f state=%s(%.2f)",
                       cmd, info["x"], info["y"], info["z"], info["pressed_label"], info["pressed_conf"])
 
-        # UP 버튼이 이미 ON이면 누르지 않고 즉시 다음 단계로 넘어간다.
-        pressed_state = str(info.get("pressed_label", "unknown")).strip().lower()
-        pressed_conf = float(info.get("pressed_conf", 0.0))
-        if cmd == "UP" and pressed_state == "on" and pressed_conf >= self.button_state_min_conf:
+        # UP 버튼만 현재 상태에 따라 분기한다.
+        # ON이면 누르지 않고 즉시 완료 이벤트를 발행한다.
+        # OFF이면 아래의 기존 로봇팔 이동/누름 코드를 그대로 실행한다.
+        if cmd == "UP":
+            raw_state = info.get("pressed_label", "unknown")
+            state_conf = float(info.get("pressed_conf", 0.0))
+            normalized_state = self.normalize_button_state(raw_state)
+
             rospy.loginfo(
-                "[arm_mission] UP already ON. Skip all arm motion and publish event immediately: %s -> %s",
-                self.arm_mission_event_topic,
-                self.arm_mission_done_event
+                "[UP_STATE] raw=%s normalized=%s conf=%.3f threshold=%.3f",
+                str(raw_state), normalized_state, state_conf, self.button_state_min_conf
             )
-            self.pub_arm_mission_event.publish(
-                String(data=self.arm_mission_done_event)
+
+            if state_conf < self.button_state_min_conf or normalized_state == "unknown":
+                rospy.logwarn(
+                    "[UP_STATE] state is not reliable yet. Keep waiting without moving arm: "
+                    "raw=%s normalized=%s conf=%.3f",
+                    str(raw_state), normalized_state, state_conf
+                )
+                self.pending_target_label = cmd
+                return
+
+            if normalized_state == "on":
+                rospy.loginfo(
+                    "[UP_STATE] UP is already ON. Skip all arm motion and go to next sequence immediately."
+                )
+                self.publish_arm_mission_done(reason="UP_ALREADY_ON")
+                self.stop_visualization()
+                return
+
+            rospy.loginfo(
+                "[UP_STATE] UP is OFF. Execute the original arm move and push sequence."
             )
-            self.stop_visualization()
-            return
 
         cam_x = info.get("cam_x", 0.0)
         cam_y = info.get("cam_y", 0.0)
@@ -1090,6 +1040,9 @@ class YoloObjectTFDetector:
         z = info["z"] + self.target_offset_z
 
         mission_ok = self.move_to_target_then_compensate(x, y, z, label=cmd)
+        rospy.loginfo("[arm_mission] target execution result [%s]: %s", cmd, str(mission_ok))
+        if not mission_ok:
+            rospy.logerr("[arm_mission] target execution failed [%s]", cmd)
 
     def run(self):
         rate = rospy.Rate(self.loop_hz)
