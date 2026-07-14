@@ -1,22 +1,24 @@
 frame_id: map
 waypoints:
-  - name: p1 # 1층 엘베 앞 3.828
+  - name: p1 # 1층 엘베 앞 20.853
     x: 3.428
-    y: -20.853
+    y: -20.553
     yaw_deg: 160.9
     mission: 3
     slow_zone: false
     aruco_on: false
     wait_key: false
+    precise_arrival: false
   
   - name: p2 # 1층 패널 1.355
-    x: 1.355
-    y: -19.992
-    yaw_deg: 152.6
+    x: 1.255
+    y: -19.792 #-19.792
+    yaw_deg: 152.6 #152.6
     mission: 3
     slow_zone: false
     aruco_on: false
     wait_key: false
+    precise_arrival: false
     
   - name: p3 # 3층 도착지
     x: 0.559
@@ -26,3 +28,4 @@ waypoints:
     slow_zone: false
     aruco_on: false
     wait_key: false
+    precise_arrival: false
