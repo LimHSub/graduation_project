@@ -932,10 +932,7 @@ class YoloObjectTFDetector:
                     rospy.loginfo("[arm_mission] contact detected → stop")
                     
                     rospy.sleep(0.2)
-                    self.publish_arm_mission_done(reason="BUTTON_CONTACT")
 
-                    # 패널 미션 완료 후 OpenCV 시각화 창을 종료하여 CPU/GPU 점유를 줄인다.
-                    self.stop_visualization()
                     
                     break
                 if time.time() - start_t > self.pose_push_timeout:
@@ -948,7 +945,30 @@ class YoloObjectTFDetector:
             self.save_current_debug_files(label=label)
             rospy.sleep(0.3)
             if contact_triggered:
-                self.move_to_saved_pre_push_then_start_pose(label=label)
+                rospy.loginfo(
+                    "[arm_mission] contact completed. Return to pre-push pose and saved start pose before done event."
+                )
+
+                return_ok = self.move_to_saved_pre_push_then_start_pose(label=label)
+
+                if not return_ok:
+                    rospy.logerr(
+                        "[arm_mission] failed to return to saved start pose [%s]. Do not publish completion event.",
+                        label
+                    )
+                    return False
+
+                rospy.loginfo(
+                    "[arm_mission] returned to saved start pose [%s]. Publish completion event now.",
+                    label
+                )
+
+                # 초기 자세 복귀가 완전히 끝난 뒤에만 상위 시퀀스 완료 이벤트 발행
+                self.publish_arm_mission_done(reason="BUTTON_CONTACT_AND_RETURN_DONE")
+
+                # 복귀 및 이벤트 발행까지 완료된 이후 시각화 종료
+                self.stop_visualization()
+
             return True
         except Exception as e:
             rospy.logerr("execute_pose_push failed for [%s]: %s", label, str(e))
