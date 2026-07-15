@@ -36,7 +36,7 @@ public:
   explicit ArmHW(ros::NodeHandle& nh)
   : nh_(nh)
   {
-    nh_.param<std::string>("port", port_name_, std::string("/dev/ttyACM1"));
+    nh_.param<std::string>("port", port_name_, std::string("/dev/serial/by-id/usb-ROBOTIS_OpenCR_Virtual_ComPort_in_FS_Mode_FFFFFFFEFFFF-if00"));
     nh_.param<int>("baud", baud_, 115200);
     nh_.param<int>("loop_hz", loop_hz_, 100);
     nh_.param<bool>("debug_tx", debug_tx_, true);
@@ -150,6 +150,7 @@ public:
           last_fb_abs_[j] = cur_abs_multi;
 
           double cur_moveit = (double)sign_[j] * (cur_abs_multi - home_rad_[j]);
+          cur_moveit = wrapToPiD(cur_moveit);
 
           if(!got_first_fb_){
             pos_unwrap_[j]   = cur_moveit;
