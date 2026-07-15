@@ -149,7 +149,7 @@ class SystemSequenceManager:
         self.start_forward_enabled = bool(rospy.get_param("~start_forward_enabled", True))
         self.start_forward_cmd_topic = rospy.get_param("~start_forward_cmd_topic", "/cmd_vel_nav")
         self.start_forward_duration = float(rospy.get_param("~start_forward_duration", 3.0))
-        self.start_forward_linear_x = float(rospy.get_param("~start_forward_linear_x", 0.08))
+        self.start_forward_linear_x = float(rospy.get_param("~start_forward_linear_x", 0.25))
         self.start_forward_rate = float(rospy.get_param("~start_forward_rate", 20.0))
 
         # =====================================================
