@@ -928,12 +928,14 @@ class YoloObjectTFDetector:
                 if contact_count >= self.contact_consecutive_required:
                     contact_triggered = True
                     self.arm_group.stop()
-                    
-                    rospy.loginfo("[arm_mission] contact detected → stop")
-                    
-                    rospy.sleep(0.2)
 
-                    
+                    rospy.loginfo("[arm_mission] contact detected → stop")
+
+                    # 접촉 감지 직후 상위 시퀀스 완료 이벤트를 먼저 발행한다.
+                    # 이후 복귀 동작의 성공 여부와 관계없이 버튼 누름 완료를 전달한다.
+                    self.publish_arm_mission_done(reason="BUTTON_CONTACT_DETECTED")
+
+                    rospy.sleep(0.2)
                     break
                 if time.time() - start_t > self.pose_push_timeout:
                     self.arm_group.stop()
@@ -959,14 +961,12 @@ class YoloObjectTFDetector:
                     return False
 
                 rospy.loginfo(
-                    "[arm_mission] returned to saved start pose [%s]. Publish completion event now.",
+                    "[arm_mission] returned to saved start pose [%s].",
                     label
                 )
 
-                # 초기 자세 복귀가 완전히 끝난 뒤에만 상위 시퀀스 완료 이벤트 발행
-                self.publish_arm_mission_done(reason="BUTTON_CONTACT_AND_RETURN_DONE")
-
-                # 복귀 및 이벤트 발행까지 완료된 이후 시각화 종료
+                # 완료 이벤트는 접촉 감지 직후 이미 발행했으므로 중복 발행하지 않는다.
+                # 기존과 동일하게 복귀 완료 후 시각화를 종료한다.
                 self.stop_visualization()
 
             return True
