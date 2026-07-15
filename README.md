@@ -6,6 +6,8 @@ roslaunch my_nav grad_demo.launch record:=false
 
 rosrun my_robot_odom system_sequence.py
 
+rosrun my_robot_odom system_sequence.py _auto_start:=false
+
 ===========================================================
 
 rosservice call /waypoint_navigator/goto "index: 0"  # 1층 Lidar 주행
