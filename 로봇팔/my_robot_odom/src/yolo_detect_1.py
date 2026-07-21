@@ -112,8 +112,8 @@ class YoloObjectTFDetector:
         self.pose_push_num_planning_attempts = 10
 
         self.target_offset_x = float(rospy.get_param("~target_offset_x", 0.005))
-        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.02))
-        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.0))
+        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.015))
+        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.015))
 
         # current monitor
         self.current_topic = "/arm/joint_current_raw"
