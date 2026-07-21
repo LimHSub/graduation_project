@@ -21,6 +21,7 @@ def clamp(v, lo, hi):
 
 class MarkerPoseControllerGradDemo:
     """
+    123
     /camera_mission 규칙
       +N : marker id N 을 보고 접근(approach)
       -N : marker id N 을 보고 후진(retreat)
@@ -290,6 +291,10 @@ class MarkerPoseControllerGradDemo:
         # 후진 완료 직후 정지 명령을 보낸 다음
         # 마커/버튼 검증을 시작하기 전 짧은 안정화 시간
         self.post_backward_settle_time = 0.20
+
+        # 버튼 상태 시각화
+        self.button_view_image = True
+        self.button_view_window_name = "Marker UP Button ON/OFF"
 
         # =====================================================
         # YOLO 모델 로드
@@ -813,21 +818,107 @@ class MarkerPoseControllerGradDemo:
             )
             return "unknown", 0.0
 
+    def show_button_debug_image(
+        self,
+        image,
+        detected=None,
+        state="unknown",
+        state_conf=0.0
+    ):
+        if not self.button_view_image:
+            return
+
+        try:
+            dbg = image.copy()
+
+            if state == "on":
+                color = (0, 255, 0)
+            elif state == "off":
+                color = (0, 0, 255)
+            else:
+                color = (0, 255, 255)
+
+            if detected is not None:
+                x1, y1, x2, y2, detect_conf = detected
+
+                cv2.rectangle(
+                    dbg,
+                    (int(x1), int(y1)),
+                    (int(x2), int(y2)),
+                    color,
+                    2
+                )
+
+                cv2.putText(
+                    dbg,
+                    "UP %s state=%.3f detect=%.3f"
+                    % (
+                        str(state).upper(),
+                        float(state_conf),
+                        float(detect_conf)
+                    ),
+                    (int(x1), max(25, int(y1) - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    color,
+                    2
+                )
+            else:
+                cv2.putText(
+                    dbg,
+                    "UP NOT DETECTED",
+                    (20, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    color,
+                    2
+                )
+
+            mode_name = {
+                self.MODE_IDLE: "IDLE",
+                self.MODE_APPROACH: "APPROACH",
+                self.MODE_RETREAT: "RETREAT",
+                self.MODE_PRE_BACKWARD: "PRE_BACKWARD",
+                self.MODE_CHECK_ENTRY: "CHECK_ENTRY",
+                self.MODE_CHECK_BUTTON: "CHECK_BUTTON",
+                self.MODE_WAIT_MARKER_ON: "WAIT_MARKER_ON",
+                self.MODE_WAIT_MARKER_OFF: "WAIT_MARKER_OFF",
+            }.get(self.mode, str(self.mode))
+
+            cv2.putText(
+                dbg,
+                "MODE: %s" % mode_name,
+                (20, 65),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 0),
+                2
+            )
+
+            cv2.putText(
+                dbg,
+                "SAMPLES: %s" % str(self.button_state_samples),
+                (20, 90),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 0),
+                2
+            )
+
+            cv2.imshow(self.button_view_window_name, dbg)
+            cv2.waitKey(1)
+
+        except Exception as e:
+            rospy.logwarn_throttle(
+                1.0,
+                "[marker_ctrl] button visualization failed: %s",
+                str(e)
+            )
+
     def infer_button_state_once(self):
         """
-        UP 버튼 상태를 한 번 판정한다.
-
-        동작 방식:
-          1) cached_up_button_box가 없을 때만 첫 번째 YOLO 모델로
-             전체 화면에서 UP 버튼 위치를 한 번 검출한다.
-          2) UP 위치가 한 번 검출되면 이후에는 첫 번째 모델을 다시 실행하지 않는다.
-          3) 새 카메라 프레임이 들어올 때마다 저장된 동일 좌표를 crop하여
-             두 번째 YOLO 모델로 ON/OFF 상태만 분류한다.
-
-        반환:
-          ("on", confidence)
-          ("off", confidence)
-          ("unknown", confidence)
+        매 판정마다 최신 컬러 프레임에서 UP 버튼을 다시 검출하고,
+        해당 최신 박스를 crop하여 ON/OFF 상태를 분류한다.
         """
         if not self.latest_color_valid():
             rospy.logwarn_throttle(
@@ -836,16 +927,9 @@ class MarkerPoseControllerGradDemo:
             )
             return "unknown", 0.0
 
-        # 같은 카메라 프레임을 두 번 분류하지 않음
         current_color_seq = self.latest_color_seq
-        if (
-            self.cached_up_button_box is not None
-            and current_color_seq == self.last_classified_color_seq
-        ):
-            rospy.loginfo_throttle(
-                1.0,
-                "[marker_ctrl] waiting new color frame for next ON/OFF sample"
-            )
+
+        if current_color_seq == self.last_classified_color_seq:
             return "unknown", 0.0
 
         try:
@@ -853,42 +937,27 @@ class MarkerPoseControllerGradDemo:
         except Exception:
             return "unknown", 0.0
 
-        # -----------------------------------------------------
-        # UP 위치 검출은 최초 성공할 때까지만 실행
-        # -----------------------------------------------------
-        if self.cached_up_button_box is None:
-            detected = self.detect_up_button_box(image)
+        detected = self.detect_up_button_box(image)
 
-            if detected is None:
-                rospy.loginfo_throttle(
-                    1.0,
-                    "[marker_ctrl] UP button not detected"
-                )
-                return "unknown", 0.0
+        if detected is None:
+            self.last_classified_color_seq = current_color_seq
 
-            x1, y1, x2, y2, detect_conf = detected
-
-            self.cached_up_button_box = (
-                int(x1),
-                int(y1),
-                int(x2),
-                int(y2)
-            )
-            self.cached_up_button_detect_conf = float(detect_conf)
-
-            rospy.loginfo(
-                "[marker_ctrl] UP button position cached once: "
-                "box=(%d,%d,%d,%d) detect_conf=%.3f",
-                int(x1),
-                int(y1),
-                int(x2),
-                int(y2),
-                float(detect_conf)
+            self.show_button_debug_image(
+                image=image,
+                detected=None,
+                state="unknown",
+                state_conf=0.0
             )
 
-        x1, y1, x2, y2 = self.cached_up_button_box
+            rospy.loginfo_throttle(
+                1.0,
+                "[marker_ctrl] UP button not detected color_seq=%d",
+                current_color_seq
+            )
+            return "unknown", 0.0
 
-        # 현재 새 프레임의 동일 좌표 영역만 ON/OFF 분류
+        x1, y1, x2, y2, detect_conf = detected
+
         state, state_conf = self.classify_button_state(
             image,
             x1,
@@ -897,16 +966,26 @@ class MarkerPoseControllerGradDemo:
             y2
         )
 
-        # 분류를 시도한 프레임 번호 저장
         self.last_classified_color_seq = current_color_seq
 
+        self.show_button_debug_image(
+            image=image,
+            detected=detected,
+            state=state,
+            state_conf=state_conf
+        )
+
         rospy.loginfo(
-            "[marker_ctrl] button state only inference: "
-            "cached_detect_conf=%.3f state=%s state_conf=%.3f "
-            "color_seq=%d",
-            self.cached_up_button_detect_conf,
+            "[marker_ctrl] current-frame UP inference: "
+            "box=(%d,%d,%d,%d) detect_conf=%.3f "
+            "state=%s state_conf=%.3f color_seq=%d",
+            int(x1),
+            int(y1),
+            int(x2),
+            int(y2),
+            float(detect_conf),
             state,
-            state_conf,
+            float(state_conf),
             current_color_seq
         )
 
@@ -916,15 +995,14 @@ class MarkerPoseControllerGradDemo:
         """
         유효한 ON/OFF 결과만 샘플 목록에 추가한다.
 
-        5개의 유효 결과가 쌓인 뒤,
-        ON 또는 OFF가 3회 이상이면 상태를 확정한다.
+        ON 또는 OFF가 3회 누적되는 즉시 상태를 확정한다.
+        최근 최대 5개 결과만 유지한다.
         """
         if state not in ["on", "off"]:
             return None
 
         self.button_state_samples.append(state)
 
-        # 최근 5개의 유효 결과만 유지
         if len(self.button_state_samples) > self.button_required_samples:
             self.button_state_samples = self.button_state_samples[
                 -self.button_required_samples:
@@ -943,24 +1021,41 @@ class MarkerPoseControllerGradDemo:
             off_count
         )
 
-        # 유효 결과 5회가 모이기 전에는 확정하지 않음
-        if len(self.button_state_samples) < self.button_required_samples:
-            return None
-
         if on_count >= self.button_required_agreement:
             return "on"
 
         if off_count >= self.button_required_agreement:
             return "off"
 
-        # 5개가 쌓였지만 3회 이상 같은 결과가 없는 경우
-        # 이론상 ON/OFF 두 상태만 있으면 발생하지 않지만,
-        # 안전하게 다시 수집
-        rospy.logwarn(
-            "[marker_ctrl] no majority in button samples -> reset samples"
-        )
-        self.button_state_samples = []
         return None
+
+    def update_button_state_while_waiting(self):
+        """
+        마커를 기다리는 동안에도 ON/OFF 상태 변화를 계속 확인한다.
+        """
+        now = time.time()
+
+        if (
+            now - self.last_button_inference_time
+            < self.button_inference_interval
+        ):
+            return None
+
+        self.last_button_inference_time = now
+
+        state, state_conf = self.infer_button_state_once()
+
+        if state not in ["on", "off"]:
+            return None
+
+        rospy.loginfo(
+            "[marker_ctrl] waiting-state button sample: "
+            "%s conf=%.3f",
+            state,
+            state_conf
+        )
+
+        return self.add_button_state_sample(state)
 
     def transition_to_approach(self, reason):
         """
@@ -1590,6 +1685,8 @@ class MarkerPoseControllerGradDemo:
             if confirmed == "on":
                 # ON이면 마커가 보일 때까지 계속 대기
                 self.mode = self.MODE_WAIT_MARKER_ON
+                self.button_state_samples = []
+                self.last_button_inference_time = 0.0
                 self.mode_pub.publish("WAIT_MARKER_ON")
 
                 rospy.loginfo(
@@ -1601,6 +1698,8 @@ class MarkerPoseControllerGradDemo:
             # OFF이면 이 시점부터 제한시간 측정
             self.mode = self.MODE_WAIT_MARKER_OFF
             self.off_marker_wait_start_time = time.time()
+            self.button_state_samples = []
+            self.last_button_inference_time = 0.0
             self.mode_pub.publish("WAIT_MARKER_OFF")
 
             rospy.loginfo(
@@ -1625,6 +1724,21 @@ class MarkerPoseControllerGradDemo:
                 )
                 return
 
+            changed_state = self.update_button_state_while_waiting()
+
+            if changed_state == "off":
+                self.button_state_samples = []
+                self.last_button_inference_time = 0.0
+
+                rospy.logwarn(
+                    "[marker_ctrl] UP changed ON -> OFF after ON confirmation "
+                    
+                )
+                return
+
+            if changed_state == "on":
+                self.button_state_samples = []
+
             rospy.loginfo_throttle(
                 1.0,
                 "[marker_ctrl] UP is ON, waiting marker id=%s",
@@ -1647,6 +1761,24 @@ class MarkerPoseControllerGradDemo:
                     "within timeout"
                 )
                 return
+
+            changed_state = self.update_button_state_while_waiting()
+
+            if changed_state == "on":
+                self.mode = self.MODE_WAIT_MARKER_ON
+                self.off_marker_wait_start_time = None
+                self.button_state_samples = []
+                self.last_button_inference_time = 0.0
+                self.mode_pub.publish("WAIT_MARKER_ON")
+
+                rospy.logwarn(
+                    "[marker_ctrl] UP changed OFF -> ON "
+                    "-> cancel OFF failure timeout"
+                )
+                return
+
+            if changed_state == "off":
+                self.button_state_samples = []
 
             if self.off_marker_wait_start_time is None:
                 self.off_marker_wait_start_time = time.time()
