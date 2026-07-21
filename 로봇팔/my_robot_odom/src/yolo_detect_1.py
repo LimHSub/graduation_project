@@ -1059,10 +1059,30 @@ class YoloObjectTFDetector:
     def move_to_saved_pre_push_then_start_pose(self, label="target"):
         ok_pre = True
         if self.pre_push_joint_map is not None:
-            ok_pre = self.move_to_joint_map(self.pre_push_joint_map, label=label, prefix="Move back to pre-push pose")
+            ok_pre = self.move_to_joint_map(
+                self.pre_push_joint_map,
+                label=label,
+                prefix="Move back to pre-push pose"
+            )
+            if not ok_pre:
+                rospy.logwarn(
+                    "Move back to pre-push pose failed [%s], but continue to saved start pose",
+                    label
+                )
             rospy.sleep(0.5)
-        ok_start = self.move_to_joint_map(self.start_pose_joint_map, label=label, prefix="Move back to saved start pose")
-        return ok_pre and ok_start
+
+        ok_start = self.move_to_joint_map(
+            self.start_pose_joint_map,
+            label=label,
+            prefix="Move back to saved start pose"
+        )
+
+        # 재시도 가능 여부는 최종 안전 자세인 start pose 복귀 성공 여부로 판단한다.
+        # pre-push 자세 복귀 실패는 별도로 기록하되, start pose가 성공하면 복귀 성공이다.
+        return {
+            "pre_push_ok": bool(ok_pre),
+            "start_pose_ok": bool(ok_start),
+        }
 
     def move_to_finish_pose_after_button(self, label="F3"):
         """
@@ -1264,9 +1284,10 @@ class YoloObjectTFDetector:
 
             # 접촉 성공/실패와 관계없이 안전하게 누르기 전 자세를 거쳐 시작 자세로 복귀한다.
             # 단, 접촉 성공 여부는 별도로 반환하여 이후 버튼 상태 판단 로그와 재시도에 사용한다.
-            return_ok = self.move_to_saved_pre_push_then_start_pose(label=label)
-            if not return_ok:
-                rospy.logwarn("Failed to return to start pose after push [%s]", label)
+            return_result = self.move_to_saved_pre_push_then_start_pose(label=label)
+            returned_to_start = bool(return_result.get("start_pose_ok", False))
+            if not returned_to_start:
+                rospy.logwarn("Failed to return to saved start pose after push [%s]", label)
 
             if contact_triggered:
                 rospy.loginfo("[push_result] Current contact detected for [%s]", label)
@@ -1276,7 +1297,8 @@ class YoloObjectTFDetector:
             return {
                 "motion_ok": True,
                 "contact_detected": bool(contact_triggered),
-                "returned_to_start": bool(return_ok),
+                "returned_to_start": returned_to_start,
+                "returned_to_pre_push": bool(return_result.get("pre_push_ok", False)),
             }
         except Exception as e:
             rospy.logerr("execute_pose_push failed for [%s]: %s", label, str(e))
@@ -1390,12 +1412,13 @@ class YoloObjectTFDetector:
 
         if cmd == "F3":
             on_confirmed = False
-            mission_ok = False
+            attempts_executed = 0
 
             # 버튼 누르기 시도 후에는 접촉 성공/실패 모두 시작 자세로 복귀한다.
             # 복귀 후 버튼 상태를 다시 확인하여 ON이면 성공, OFF이면 재시도한다.
             # 상태를 확정하지 못하면 안전을 위해 추가 누르기를 중단한다.
             for attempt in range(1, max(1, self.button_push_max_attempts) + 1):
+                attempts_executed = attempt
                 rospy.loginfo(
                     "[arm_mission] F3 push attempt %d/%d",
                     attempt, max(1, self.button_push_max_attempts)
@@ -1459,8 +1482,8 @@ class YoloObjectTFDetector:
 
             if not on_confirmed:
                 rospy.logwarn(
-                    "[arm_mission] F3 ON was not confirmed after %d push attempts. SEXY_BUTTON event not published.",
-                    max(1, self.button_push_max_attempts)
+                    "[arm_mission] F3 ON was not confirmed after %d executed push attempt(s). SEXY_BUTTON event not published.",
+                    attempts_executed
                 )
                 return
 
