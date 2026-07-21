@@ -33,8 +33,8 @@ class YoloObjectTFDetector:
         rospy.init_node("yolo_object_tf_detector", anonymous=False)
 
         # YOLO models
-        self.detect_model_path = rospy.get_param("~detect_model_path", "/home/park/best1.pt")
-        self.pressed_model_path = rospy.get_param("~pressed_model_path", "/home/park/best2.pt")
+        self.detect_model_path = rospy.get_param("~detect_model_path", "/home/inwoong/catkin_ws/best1.pt")
+        self.pressed_model_path = rospy.get_param("~pressed_model_path", "/home/inwoong/catkin_ws/best2.pt")
 
         self.target_class = rospy.get_param("~target_class", "")
         self.detect_conf_thresh = float(rospy.get_param("~detect_conf_thresh", 0.5))
@@ -112,8 +112,8 @@ class YoloObjectTFDetector:
         self.pose_push_num_planning_attempts = 10
 
         self.target_offset_x = float(rospy.get_param("~target_offset_x", 0.005))
-        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.02))
-        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.0))
+        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.015))
+        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.015))
 
         # current monitor
         self.current_topic = "/arm/joint_current_raw"
