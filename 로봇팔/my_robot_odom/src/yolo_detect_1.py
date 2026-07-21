@@ -33,8 +33,8 @@ class YoloObjectTFDetector:
         rospy.init_node("yolo_object_tf_detector", anonymous=False)
 
         # YOLO models
-        self.detect_model_path = rospy.get_param("~detect_model_path", "/home/inwoong/catkin_ws/best1.pt")
-        self.pressed_model_path = rospy.get_param("~pressed_model_path", "/home/inwoong/catkin_ws/best2.pt")
+        self.detect_model_path = rospy.get_param("~detect_model_path", "/home/park/best1.pt")
+        self.pressed_model_path = rospy.get_param("~pressed_model_path", "/home/park/best2.pt")
 
         self.target_class = rospy.get_param("~target_class", "")
         self.detect_conf_thresh = float(rospy.get_param("~detect_conf_thresh", 0.5))
@@ -112,8 +112,8 @@ class YoloObjectTFDetector:
         self.pose_push_num_planning_attempts = 10
 
         self.target_offset_x = float(rospy.get_param("~target_offset_x", 0.005))
-        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.015))
-        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.015))
+        self.target_offset_y = float(rospy.get_param("~target_offset_y", -0.02))
+        self.target_offset_z = float(rospy.get_param("~target_offset_z", 0.0))
 
         # current monitor
         self.current_topic = "/arm/joint_current_raw"
@@ -204,6 +204,14 @@ class YoloObjectTFDetector:
         self.button_state_poll_dt = float(rospy.get_param("~button_state_poll_dt", 0.15))
         self.button_state_required_count = int(rospy.get_param("~button_state_required_count", 2))
         self.button_state_min_conf = float(rospy.get_param("~button_state_min_conf", 0.50))
+
+        # 버튼을 누르기 전에는 ON이 연속 3회 이상 확인될 때만 이미 눌린 상태로 인정한다.
+        self.pre_button_on_required_count = int(rospy.get_param("~pre_button_on_required_count", 3))
+        self.pre_button_state_timeout = float(rospy.get_param("~pre_button_state_timeout", 2.0))
+
+        # 버튼을 누르고 시작 자세로 복귀한 뒤 ON이 아니면 다시 누르는 최대 횟수
+        self.button_push_max_attempts = int(rospy.get_param("~button_push_max_attempts", 3))
+        self.button_on_confirm_timeout = float(rospy.get_param("~button_on_confirm_timeout", 3.0))
 
         rospy.loginfo("[yolo_detect_1] prestarted button node ready. command_topic=%s view_image=%s",
                       self.command_topic, str(self.view_image))
@@ -708,6 +716,132 @@ class YoloObjectTFDetector:
             rospy.logwarn_throttle(1.0, "detect_button_state_once failed: %s", str(e))
             return None, 0.0
 
+    def confirm_button_state_consecutive(self, label, desired_state, required_count, timeout):
+        """
+        현재 카메라 영상에서 원하는 버튼 상태가 지정 횟수만큼 연속 검출되는지 확인한다.
+        중간에 다른 상태, 미검출, 낮은 신뢰도가 나오면 연속 횟수를 초기화한다.
+        """
+        target_label = str(label).strip().upper()
+        desired_state = str(desired_state).strip().lower()
+        required = max(1, int(required_count))
+        consecutive = 0
+        start_t = time.time()
+
+        rospy.loginfo(
+            "[button_state] confirm %s=%s consecutively %d times, timeout=%.1fs",
+            target_label, desired_state.upper(), required, float(timeout)
+        )
+
+        while not rospy.is_shutdown() and (time.time() - start_t) < float(timeout):
+            state, conf = self.detect_button_state_once(target_label)
+
+            if state == desired_state and conf >= self.button_state_min_conf:
+                consecutive += 1
+                rospy.loginfo(
+                    "[button_state] %s %s count=%d/%d conf=%.2f",
+                    target_label, desired_state.upper(), consecutive, required, conf
+                )
+                if consecutive >= required:
+                    return True
+            else:
+                if consecutive > 0:
+                    rospy.loginfo(
+                        "[button_state] %s consecutive %s reset: state=%s conf=%.2f",
+                        target_label, desired_state.upper(), str(state), float(conf)
+                    )
+                consecutive = 0
+
+            rospy.sleep(self.button_state_poll_dt)
+
+        rospy.logwarn(
+            "[button_state] %s consecutive %s confirmation failed: required=%d",
+            target_label, desired_state.upper(), required
+        )
+        return False
+
+
+    def detect_stable_button_state(self, label="F3", required_count=None, timeout=None):
+        """
+        현재 버튼 상태를 연속 검출로 확인한다.
+        ON이 연속 확인되면 "on", OFF가 연속 확인되면 "off",
+        제한 시간 안에 어느 쪽도 확정되지 않으면 "unknown"을 반환한다.
+        """
+        target_label = str(label).strip().upper()
+        required = max(1, int(
+            self.button_state_required_count if required_count is None else required_count
+        ))
+        check_timeout = float(
+            self.button_on_confirm_timeout if timeout is None else timeout
+        )
+
+        on_count = 0
+        off_count = 0
+        start_t = time.time()
+
+        rospy.loginfo(
+            "[button_state] determine stable %s state, required=%d timeout=%.1fs",
+            target_label, required, check_timeout
+        )
+
+        while not rospy.is_shutdown() and (time.time() - start_t) < check_timeout:
+            state, conf = self.detect_button_state_once(target_label)
+
+            if conf < self.button_state_min_conf:
+                on_count = 0
+                off_count = 0
+                rospy.sleep(self.button_state_poll_dt)
+                continue
+
+            if state == "on":
+                on_count += 1
+                off_count = 0
+                if on_count >= required:
+                    rospy.loginfo("[button_state] %s stable ON confirmed", target_label)
+                    return "on"
+            elif state == "off":
+                off_count += 1
+                on_count = 0
+                if off_count >= required:
+                    rospy.loginfo("[button_state] %s stable OFF confirmed", target_label)
+                    return "off"
+            else:
+                on_count = 0
+                off_count = 0
+
+            rospy.sleep(self.button_state_poll_dt)
+
+        rospy.logwarn("[button_state] %s stable state could not be determined", target_label)
+        return "unknown"
+
+    def wait_for_button_off_after_on_confirmed(self, label="F3"):
+        """ON 상태가 이미 확인된 뒤 OFF가 연속 확인될 때까지 기다린다."""
+        target_label = str(label).strip().upper()
+        timeout = self.button_state_after_push_timeout
+        required = max(1, self.button_state_required_count)
+        off_count = 0
+        start_t = time.time()
+
+        rospy.loginfo(
+            "[button_state] %s ON already confirmed. wait OFF, timeout=%.1fs, required=%d",
+            target_label, timeout, required
+        )
+
+        while not rospy.is_shutdown() and (time.time() - start_t) < timeout:
+            state, conf = self.detect_button_state_once(target_label)
+
+            if state == "off" and conf >= self.button_state_min_conf:
+                off_count += 1
+                if off_count >= required:
+                    rospy.loginfo("[button_state] %s OFF confirmed after ON", target_label)
+                    return True
+            else:
+                off_count = 0
+
+            rospy.sleep(self.button_state_poll_dt)
+
+        rospy.logwarn("[button_state] %s OFF wait timeout after ON confirmation", target_label)
+        return False
+
     def wait_for_button_on_to_off_after_push(self, label="F3"):
         """
         push 이후 버튼 상태가 ON으로 바뀐 것을 먼저 확인하고,
@@ -1127,19 +1261,44 @@ class YoloObjectTFDetector:
             self.arm_group.stop()
             self.arm_group.clear_pose_targets()
             rospy.sleep(0.3)
+
+            # 접촉 성공/실패와 관계없이 안전하게 누르기 전 자세를 거쳐 시작 자세로 복귀한다.
+            # 단, 접촉 성공 여부는 별도로 반환하여 이후 버튼 상태 판단 로그와 재시도에 사용한다.
+            return_ok = self.move_to_saved_pre_push_then_start_pose(label=label)
+            if not return_ok:
+                rospy.logwarn("Failed to return to start pose after push [%s]", label)
+
             if contact_triggered:
-                self.move_to_saved_pre_push_then_start_pose(label=label)
-            return True
+                rospy.loginfo("[push_result] Current contact detected for [%s]", label)
+            else:
+                rospy.logwarn("[push_result] Current contact was NOT detected for [%s]", label)
+
+            return {
+                "motion_ok": True,
+                "contact_detected": bool(contact_triggered),
+                "returned_to_start": bool(return_ok),
+            }
         except Exception as e:
             rospy.logerr("execute_pose_push failed for [%s]: %s", label, str(e))
             return False
 
     def move_to_target_then_compensate(self, x, y, z, label="target"):
         if not self.move_to_position_only(x, y, z, label=label):
-            return False
+            return {
+                "motion_ok": False,
+                "contact_detected": False,
+                "returned_to_start": False,
+            }
         target_xyz = [x, y, z]
         self.compensate_after_move_once(target_xyz, label=label)
-        return self.execute_pose_push(label=label)
+        result = self.execute_pose_push(label=label)
+        if isinstance(result, dict):
+            return result
+        return {
+            "motion_ok": bool(result),
+            "contact_detected": False,
+            "returned_to_start": bool(result),
+        }
 
     def execute_pending_target_if_requested(self):
         if self.pending_target_label is None:
@@ -1183,25 +1342,44 @@ class YoloObjectTFDetector:
             source
         )
 
-        # F3가 이미 ON이면 로봇팔을 움직이지 않고 OFF만 기다린다.
+        # F3가 이미 ON처럼 보이더라도 연속 3회 이상 ON이 확인될 때만 누르지 않는다.
         if cmd == "F3" and source == "direct_f3_already_on_wait_off":
-            rospy.loginfo("[arm_mission] F3 already ON. Skip movement and wait until OFF.")
-            off_ok = self.wait_for_button_off_without_motion(label=cmd)
-            if off_ok:
-                rospy.sleep(3.0)
+            on_confirmed = self.confirm_button_state_consecutive(
+                label=cmd,
+                desired_state="on",
+                required_count=self.pre_button_on_required_count,
+                timeout=self.pre_button_state_timeout
+            )
+
+            if on_confirmed:
                 rospy.loginfo(
-                    "[arm_mission] F3 OFF confirmed without motion. publish event: %s -> %s",
-                    self.arm_mission_event_topic,
-                    self.arm_mission_done_event
+                    "[arm_mission] F3 ON confirmed %d consecutive times. Skip movement and wait until OFF.",
+                    self.pre_button_on_required_count
                 )
-                self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
-                self.stop_visualization()
-                finish_ok = self.move_to_finish_pose_after_button(label=cmd)
-                if not finish_ok:
-                    rospy.logwarn("[arm_mission] finish pose move failed after already-ON wait")
-            else:
-                rospy.logwarn("[arm_mission] F3 was already ON, but OFF was not confirmed. SEXY_BUTTON event not published.")
-            return
+                off_ok = self.wait_for_button_off_without_motion(label=cmd)
+                if off_ok:
+                    rospy.sleep(3.0)
+                    rospy.loginfo(
+                        "[arm_mission] F3 OFF confirmed without motion. publish event: %s -> %s",
+                        self.arm_mission_event_topic,
+                        self.arm_mission_done_event
+                    )
+                    self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
+                    self.stop_visualization()
+                    finish_ok = self.move_to_finish_pose_after_button(label=cmd)
+                    if not finish_ok:
+                        rospy.logwarn("[arm_mission] finish pose move failed after already-ON wait")
+                else:
+                    rospy.logwarn("[arm_mission] F3 was already ON, but OFF was not confirmed. SEXY_BUTTON event not published.")
+                return
+
+            # 3회 연속 ON이 아니면 '이미 ON'으로 인정하지 않고 정상 누르기 절차를 수행한다.
+            rospy.logwarn(
+                "[arm_mission] F3 ON was not confirmed %d consecutive times. Proceed with button push.",
+                self.pre_button_on_required_count
+            )
+            source = "direct_f3_on_not_stable_press"
+            info["source"] = source
 
         x, y, z = self.apply_target_offset(info)
 
@@ -1210,15 +1388,85 @@ class YoloObjectTFDetector:
             cmd, x, y, z, source
         )
 
-        mission_ok = self.move_to_target_then_compensate(x, y, z, label=cmd)
+        if cmd == "F3":
+            on_confirmed = False
+            mission_ok = False
 
-        rospy.sleep(2.0)
+            # 버튼 누르기 시도 후에는 접촉 성공/실패 모두 시작 자세로 복귀한다.
+            # 복귀 후 버튼 상태를 다시 확인하여 ON이면 성공, OFF이면 재시도한다.
+            # 상태를 확정하지 못하면 안전을 위해 추가 누르기를 중단한다.
+            for attempt in range(1, max(1, self.button_push_max_attempts) + 1):
+                rospy.loginfo(
+                    "[arm_mission] F3 push attempt %d/%d",
+                    attempt, max(1, self.button_push_max_attempts)
+                )
 
-        # F3 버튼은 push 성공 직후 바로 완료 처리하지 않는다.
-        # push 후 F3 상태가 ON이 된 것을 확인하고, 이후 OFF로 변경될 때 SEXY_BUTTON을 publish한다.
-        if cmd == "F3" and mission_ok:
-            transition_ok = self.wait_for_button_on_to_off_after_push(label=cmd)
-            if transition_ok:
+                push_result = self.move_to_target_then_compensate(x, y, z, label=cmd)
+
+                if not push_result.get("motion_ok", False):
+                    rospy.logwarn(
+                        "[arm_mission] F3 push motion failed on attempt %d. Retry if attempts remain.",
+                        attempt
+                    )
+                    continue
+
+                if not push_result.get("returned_to_start", False):
+                    rospy.logwarn(
+                        "[arm_mission] F3 did not return to start pose after attempt %d. Stop retry for safety.",
+                        attempt
+                    )
+                    break
+
+                if push_result.get("contact_detected", False):
+                    rospy.loginfo(
+                        "[arm_mission] F3 contact detected on attempt %d. Check button state after return.",
+                        attempt
+                    )
+                else:
+                    rospy.logwarn(
+                        "[arm_mission] F3 contact not detected on attempt %d. Check button state after return.",
+                        attempt
+                    )
+
+                rospy.sleep(2.0)
+
+                stable_state = self.detect_stable_button_state(
+                    label=cmd,
+                    required_count=self.button_state_required_count,
+                    timeout=self.button_on_confirm_timeout
+                )
+
+                if stable_state == "on":
+                    on_confirmed = True
+                    rospy.loginfo(
+                        "[arm_mission] F3 ON confirmed after attempt %d. contact_detected=%s",
+                        attempt, str(push_result.get("contact_detected", False))
+                    )
+                    break
+
+                if stable_state == "off":
+                    rospy.logwarn(
+                        "[arm_mission] F3 is still OFF after attempt %d. Retry button push if attempts remain.",
+                        attempt
+                    )
+                    continue
+
+                rospy.logwarn(
+                    "[arm_mission] F3 state is unknown after attempt %d. Stop retry to avoid an unintended extra press.",
+                    attempt
+                )
+                break
+
+            if not on_confirmed:
+                rospy.logwarn(
+                    "[arm_mission] F3 ON was not confirmed after %d push attempts. SEXY_BUTTON event not published.",
+                    max(1, self.button_push_max_attempts)
+                )
+                return
+
+            # ON은 이미 확인했으므로 이후 OFF 전환만 기다린다.
+            off_ok = self.wait_for_button_off_after_on_confirmed(label=cmd)
+            if off_ok:
                 rospy.sleep(3.0)
                 rospy.loginfo(
                     "[arm_mission] F3 ON->OFF confirmed. publish event: %s -> %s",
@@ -1226,19 +1474,15 @@ class YoloObjectTFDetector:
                     self.arm_mission_done_event
                 )
                 self.pub_arm_mission_event.publish(String(data=self.arm_mission_done_event))
-
-                # SEXY_BUTTON 전송 후 카메라 시각화 종료
                 self.stop_visualization()
-
-                # SEXY_BUTTON 전송과 별개로, 전송 직후 마무리 자세로 복귀한다.
                 finish_ok = self.move_to_finish_pose_after_button(label=cmd)
                 if not finish_ok:
                     rospy.logwarn("[arm_mission] finish pose move failed after SEXY_BUTTON publish")
             else:
-                rospy.logwarn("[arm_mission] F3 ON->OFF transition not confirmed. SEXY_BUTTON event not published.")
+                rospy.logwarn("[arm_mission] F3 OFF was not confirmed after ON. SEXY_BUTTON event not published.")
 
-        elif cmd == "F3" and not mission_ok:
-            rospy.logwarn("[arm_mission] F3 mission failed. SEXY_BUTTON event not published.")
+        else:
+            self.move_to_target_then_compensate(x, y, z, label=cmd)
 
     def run(self):
         rate = rospy.Rate(self.loop_hz)
