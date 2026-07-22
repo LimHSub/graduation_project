@@ -177,6 +177,20 @@ class YoloObjectTFDetector:
         )
         self.button_on_consecutive_count = 0
         self.button_on_last_frame_stamp = None
+
+        # UP 버튼 상태 토픽 발행 설정
+        # 토픽: /up_button_state
+        # 메시지: on / off / unknown
+        # 발행 주기: 최대 5Hz (0.2초 간격)
+        self.up_button_state_topic = "/up_button_state"
+        self.up_button_state_publish_interval = 0.10
+        self.last_up_button_state_publish_time = 0.0
+        self.pub_up_button_state = rospy.Publisher(
+            self.up_button_state_topic,
+            String,
+            queue_size=10
+        )
+
         self.done_event_publish_count = int(rospy.get_param("~done_event_publish_count", 1))
         self.done_event_publish_interval = float(rospy.get_param("~done_event_publish_interval", 0.10))
 
@@ -419,6 +433,28 @@ class YoloObjectTFDetector:
         if raw in off_aliases:
             return "off"
         return "unknown"
+
+    def publish_up_button_state(self, state):
+        """UP 버튼 상태를 /up_button_state 토픽으로 최대 5Hz 발행한다."""
+        normalized_state = self.normalize_button_state(state)
+        if normalized_state not in ["on", "off"]:
+            normalized_state = "unknown"
+
+        now = time.time()
+        if (
+            now - self.last_up_button_state_publish_time
+            < self.up_button_state_publish_interval
+        ):
+            return
+
+        self.last_up_button_state_publish_time = now
+        self.pub_up_button_state.publish(String(data=normalized_state))
+        rospy.loginfo_throttle(
+            1.0,
+            "[UP_STATE_TOPIC] publish %s -> %s",
+            normalized_state,
+            self.up_button_state_topic
+        )
 
     def publish_arm_mission_done(self, reason="done"):
         """완료 이벤트를 여러 번 발행해 상위 시퀀스가 확실히 수신하도록 한다."""
@@ -991,6 +1027,7 @@ class YoloObjectTFDetector:
             try:
                 if not self.camera_ready():
                     rospy.logwarn_throttle(2.0, "Waiting for camera topics: color/depth/camera_info")
+                    self.publish_up_button_state("unknown")
                     rate.sleep()
                     continue
 
@@ -1005,6 +1042,10 @@ class YoloObjectTFDetector:
                     verbose=False
                 )[0]
 
+                # 한 프레임 안에서 가장 신뢰도가 높은 UP 검출 결과 하나만
+                # /up_button_state 발행에 사용한다.
+                best_up_candidate = None
+
                 if detect_result is not None and detect_result.boxes is not None and len(detect_result.boxes) > 0:
                     names = detect_result.names
                     for box in detect_result.boxes:
@@ -1015,6 +1056,18 @@ class YoloObjectTFDetector:
                             continue
 
                         x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+
+                        # UP 상태 토픽은 depth/TF와 무관하므로 먼저 후보를 저장한다.
+                        if str(label).strip().upper() == "UP":
+                            if best_up_candidate is None or conf > best_up_candidate["conf"]:
+                                best_up_candidate = {
+                                    "conf": conf,
+                                    "x1": x1,
+                                    "y1": y1,
+                                    "x2": x2,
+                                    "y2": y2,
+                                }
+
                         cx_pix = int((x1 + x2) / 2)
                         cy_pix = int((y1 + y2) / 2)
 
@@ -1038,6 +1091,27 @@ class YoloObjectTFDetector:
                             cam_x=X, cam_y=Y, cam_z=Z
                         )
 
+                # UP 버튼 상태는 depth/TF 성공 여부와 관계없이 발행한다.
+                if best_up_candidate is None:
+                    self.publish_up_button_state("unknown")
+                else:
+                    pressed_label, pressed_conf = self.classify_pressed_state(
+                        color_image,
+                        best_up_candidate["x1"],
+                        best_up_candidate["y1"],
+                        best_up_candidate["x2"],
+                        best_up_candidate["y2"]
+                    )
+                    normalized_state = self.normalize_button_state(pressed_label)
+
+                    if (
+                        pressed_conf < self.button_state_min_conf or
+                        normalized_state not in ["on", "off"]
+                    ):
+                        normalized_state = "unknown"
+
+                    self.publish_up_button_state(normalized_state)
+
                 self.clear_stale_targets(stamp)
                 self.execute_pending_target_if_requested()
                 rate.sleep()
@@ -1045,6 +1119,7 @@ class YoloObjectTFDetector:
                 break
             except Exception as e:
                 rospy.logerr_throttle(1.0, "Runtime error: %s", str(e))
+                self.publish_up_button_state("unknown")
                 rate.sleep()
 
     def stop_visualization(self):
