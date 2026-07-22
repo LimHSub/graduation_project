@@ -252,7 +252,7 @@ class MarkerPoseControllerGradDemo:
         self.up_button_state_topic = "/up_button_state"
 
         # 5 Hz 토픽을 기준으로 최근 메시지만 사용
-        self.button_topic_expected_hz = 5.0
+        self.button_topic_expected_hz = 10.0
         self.button_topic_timeout = 1.0
 
         # 버튼 검사 시작 후 최대 10초 안에 ON/OFF 확정
