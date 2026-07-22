@@ -672,6 +672,116 @@ class YoloObjectTFDetector:
                           label, info["x"], info["y"], info["z"], info["conf"],
                           info["pressed_label"], info["pressed_conf"])
 
+    def detect_targets_once_with_depth(self):
+        """
+        현재 최신 color/depth 프레임에서 버튼을 다시 검출하고,
+        depth와 TF를 이용해 base_link 좌표까지 새로 계산하여 저장한다.
+        메인 run 루프가 버튼 임무 수행 중 막혀 있어도 재시도 전에 직접 좌표를 갱신하기 위해 사용한다.
+        """
+        if not self.camera_ready():
+            return False
+
+        try:
+            color_image = self.latest_color_image.copy()
+            depth_image = self.latest_depth_image.copy()
+            stamp = self.latest_color_stamp if self.latest_color_stamp is not None else rospy.Time.now()
+
+            detect_result = self.detect_model.predict(
+                source=color_image,
+                conf=self.detect_conf_thresh,
+                iou=self.detect_iou_thresh,
+                verbose=False
+            )[0]
+
+            if detect_result is None or detect_result.boxes is None or len(detect_result.boxes) <= 0:
+                return False
+
+            detected_any = False
+            names = detect_result.names
+
+            for box in detect_result.boxes:
+                cls_id = int(box.cls[0].item())
+                label = str(names.get(cls_id, str(cls_id))).strip().upper()
+                conf = float(box.conf[0].item())
+
+                if self.target_class and label != str(self.target_class).strip().upper():
+                    continue
+
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                cx_pix = int((x1 + x2) / 2)
+                cy_pix = int((y1 + y2) / 2)
+
+                z = self.get_depth_robust(
+                    depth_image,
+                    cx_pix,
+                    cy_pix,
+                    r=self.depth_patch_radius
+                )
+                if z <= 0.0:
+                    continue
+
+                X, Y, Z = self.pixel_to_camera_xyz(cx_pix, cy_pix, z)
+                base_pt = self.transform_point_to_base(X, Y, Z, stamp)
+                if base_pt is None:
+                    continue
+
+                pressed_label, pressed_conf = self.classify_pressed_state(
+                    color_image, x1, y1, x2, y2
+                )
+
+                self.update_detected_target(
+                    label,
+                    base_pt.point.x,
+                    base_pt.point.y,
+                    base_pt.point.z,
+                    conf,
+                    stamp,
+                    pressed_label,
+                    pressed_conf
+                )
+                detected_any = True
+
+            self.clear_stale_targets(rospy.Time.now())
+            return detected_any
+
+        except Exception as e:
+            rospy.logwarn_throttle(
+                1.0,
+                "detect_targets_once_with_depth failed: %s",
+                str(e)
+            )
+            return False
+
+    def redetect_f3_target_for_retry(self, timeout=3.0):
+        """
+        재시도 전에 기존 좌표를 폐기하고 F3/F2/F4를 새로 검출한다.
+        새로 검출된 좌표가 기존 F3 선택 조건을 통과할 때만 반환한다.
+        """
+        self.clear_detection_buffers()
+        start_t = time.time()
+
+        rospy.loginfo(
+            "[retry_redetect] Clear old coordinates and re-detect F3 before retry, timeout=%.1fs",
+            float(timeout)
+        )
+
+        while not rospy.is_shutdown() and (time.time() - start_t) < float(timeout):
+            self.detect_targets_once_with_depth()
+            new_info = self.select_f3_target()
+
+            if new_info is not None:
+                source = str(new_info.get("source", "unknown"))
+                rospy.loginfo(
+                    "[retry_redetect] New F3 target acquired: x=%.3f y=%.3f z=%.3f source=%s",
+                    new_info["x"], new_info["y"], new_info["z"], source
+                )
+                return new_info
+
+            rospy.sleep(self.button_state_poll_dt)
+
+        rospy.logwarn("[retry_redetect] Failed to acquire a new valid F3 target")
+        return None
+
     def detect_button_state_once(self, target_label):
         """
         현재 color image 한 프레임에서 target_label의 ON/OFF 상태만 확인한다.
@@ -1469,8 +1579,53 @@ class YoloObjectTFDetector:
 
                 if stable_state == "off":
                     rospy.logwarn(
-                        "[arm_mission] F3 is still OFF after attempt %d. Retry button push if attempts remain.",
+                        "[arm_mission] F3 is still OFF after attempt %d. Re-detect button coordinates before retry.",
                         attempt
+                    )
+
+                    if attempt >= max(1, self.button_push_max_attempts):
+                        continue
+
+                    refreshed_info = self.redetect_f3_target_for_retry(
+                        timeout=self.button_on_confirm_timeout
+                    )
+                    if refreshed_info is None:
+                        rospy.logwarn(
+                            "[arm_mission] New F3 coordinates were not acquired after attempt %d. Stop retry for safety.",
+                            attempt
+                        )
+                        break
+
+                    refreshed_source = str(refreshed_info.get("source", "unknown"))
+
+                    # 재검출 시 이미 ON으로 보이면 좌표 이동 없이 ON을 다시 확인한다.
+                    if refreshed_source == "direct_f3_already_on_wait_off":
+                        retry_on_confirmed = self.confirm_button_state_consecutive(
+                            label=cmd,
+                            desired_state="on",
+                            required_count=self.button_state_required_count,
+                            timeout=self.button_on_confirm_timeout
+                        )
+                        if retry_on_confirmed:
+                            on_confirmed = True
+                            rospy.loginfo(
+                                "[arm_mission] F3 became ON while re-detecting after attempt %d. Skip extra push.",
+                                attempt
+                            )
+                            break
+
+                        rospy.logwarn(
+                            "[arm_mission] Re-detected F3 looked ON but was not stable. Stop retry to avoid unintended press."
+                        )
+                        break
+
+                    # 다음 시도는 반드시 새로 검출한 좌표를 사용한다.
+                    info = refreshed_info
+                    source = refreshed_source
+                    x, y, z = self.apply_target_offset(refreshed_info)
+                    rospy.loginfo(
+                        "[retry_redetect] Updated retry target: x=%.3f y=%.3f z=%.3f source=%s",
+                        x, y, z, source
                     )
                     continue
 
