@@ -89,6 +89,9 @@ class YoloObjectTFDetector:
         # Re-detection motion. While moving, YOLO inference is paused and stored targets are cleared.
         self.detection_paused = False
         self.f3_reobserve_attempted = False
+        # F3 좌표 검증 실패 시 재인식 횟수. 기존 파라미터는 변경하지 않고 3회로 고정한다.
+        self.f3_reobserve_count = 0
+        self.f3_reobserve_max_count = 3
         self.reobserve_settle_wait = float(rospy.get_param("~reobserve_settle_wait", 0.8))
 
         # MoveIt
@@ -336,6 +339,7 @@ class YoloObjectTFDetector:
             self.pending_target_label = label
             if label == "F3":
                 self.f3_reobserve_attempted = False
+                self.f3_reobserve_count = 0
             rospy.loginfo("Received target label command: %s", label)
 
     def get_depth_robust(self, depth_image, u, v, r=2):
@@ -1446,11 +1450,45 @@ class YoloObjectTFDetector:
         if cmd == "F3":
             info = self.select_f3_target()
             if info is None:
-                if self.f3_select_fail_reason == "need_reobserve" and not self.f3_reobserve_attempted:
-                    self.f3_reobserve_attempted = True
-                    self.move_to_reobserve_pose()
-                self.pending_target_label = cmd
-                return
+                if self.f3_select_fail_reason == "need_reobserve":
+                    if self.f3_reobserve_count < self.f3_reobserve_max_count:
+                        self.f3_reobserve_count += 1
+                        self.f3_reobserve_attempted = True
+                        rospy.logwarn(
+                            "[reobserve] F3 coordinate verification failed. Re-detection attempt %d/%d.",
+                            self.f3_reobserve_count,
+                            self.f3_reobserve_max_count
+                        )
+                        self.move_to_reobserve_pose()
+                        self.pending_target_label = cmd
+                        return
+
+                    # 세 번 재인식한 뒤에도 거리/안정성 검증이 실패하면,
+                    # 현재 직접 검출된 F3가 OFF로 확인된 경우에만 해당 좌표를 그대로 사용한다.
+                    forced_f3 = self.detected_targets.get("F3")
+                    if forced_f3 is not None and self.is_f3_off(forced_f3):
+                        info = self.make_f3_selection(
+                            forced_f3,
+                            "direct_f3_forced_after_3_reobserve"
+                        )
+                        rospy.logwarn(
+                            "[f3_select] F3 geometry/stability verification failed after %d re-detections. "
+                            "Use the currently detected F3 coordinates: x=%.3f y=%.3f z=%.3f",
+                            self.f3_reobserve_max_count,
+                            forced_f3["x"],
+                            forced_f3["y"],
+                            forced_f3["z"]
+                        )
+                    else:
+                        rospy.logwarn_throttle(
+                            1.0,
+                            "[f3_select] Three re-detections completed, but a directly detected OFF F3 is unavailable. Keep waiting..."
+                        )
+                        self.pending_target_label = cmd
+                        return
+                else:
+                    self.pending_target_label = cmd
+                    return
         else:
             if cmd not in self.detected_targets:
                 rospy.logwarn_throttle(
