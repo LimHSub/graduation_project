@@ -1,0 +1,1019 @@
+/*	2026-01-04	*/
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include <stdio.h>
+#include <math.h>
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
+
+UART_HandleTypeDef huart2;
+UART_HandleTypeDef huart3;
+
+/* USER CODE BEGIN PV */
+static uint8_t rx3;
+
+#define RX3_LINE_MAX 32
+static char     rx3_line[RX3_LINE_MAX];
+static uint8_t  rx3_idx = 0;
+
+static volatile uint8_t speed_updated = 0;
+static volatile int16_t cmd_duty_L = 0;   // 0 또는 5~30
+static volatile int16_t cmd_duty_R = 0;   // 0 또는 5~30
+
+
+
+static int32_t enc1_prev = 0;
+static int32_t enc2_prev = 0;
+static uint32_t last_send_ms = 0;
+static uint32_t last_upd_ms  = 0;
+
+static int32_t acc1_raw = 0;   // TIM4 (Motor1 encoder) raw 누적
+static int32_t acc2_raw = 0;   // TIM3 (Motor2 encoder) raw 누적
+
+// ===== Motor1 pins =====
+#define M1_START_GPIO GPIOA
+#define M1_START_PIN  GPIO_PIN_4
+#define M1_DIR_GPIO   GPIOB
+#define M1_DIR_PIN    GPIO_PIN_4
+
+// ===== Motor2 pins =====
+#define M2_START_GPIO GPIOA
+#define M2_START_PIN  GPIO_PIN_5
+#define M2_DIR_GPIO   GPIOB
+#define M2_DIR_PIN    GPIO_PIN_5
+
+#define ENC_SHIFT   6       // /64
+#define ENC_SEND_MS 50      // UART 출력 주기
+#define ENC_UPD_MS  2       // 엔코더 누적 주기(1~5ms 추천)
+#define ENC1_SIGN (+1)   // Motor1(TIM4) 정상
+#define ENC2_SIGN (-1)   // Motor2(TIM3) 반전
+
+// ✅ 튜닝 파라미터(너 상황: 좌/우 오차가 작아짐 → 더 섬세하게)
+#define YAW_DEADBAND_DEG   (0.8f)   // 이 이하면 무시
+#define Kp_YAW             (0.1f)  // (% duty / deg)  ← 작게 시작    #0.1f
+#define Kd_GZ              (0.01f)  // (% duty / (deg/s))         #0.01f
+#define CORR_MAX           (5.0f)   // 보정 최대 ±% duty
+#define CORR_SLEW          (0.3f)   // 1회 업데이트당 최대 변화량(%)
+
+// IMU 축/방향에 따라 부호가 반대면 여기만 바꿔서 해결
+#define YAW_SIGN           (+1.0f)  // 필요하면 -1
+#define GZ_SIGN            (+1.0f)  // 필요하면 -1
+
+static uint8_t imu_rx;
+
+#define IMU_FRAME_LEN 11
+static uint8_t imu_buf[IMU_FRAME_LEN];
+static uint8_t imu_idx = 0;
+static uint8_t imu_sync = 0;
+
+/* 최신 IMU 값(메인에서 송신용) */
+static volatile float imu_yaw_deg = 0.0f;   // yaw [deg]
+static volatile float imu_gz_dps  = 0.0f;   // z gyro [deg/s]
+
+/* yaw 상대값이 필요하면 사용 */
+static volatile float imu_yaw0_deg = 0.0f;
+static volatile uint8_t imu_yaw0_set = 0;
+
+static volatile float yaw_ref = 0.0f;
+static volatile uint8_t yaw_ref_set = 0;
+
+static volatile uint8_t straight_active = 0; // w/s일 때 1
+static volatile uint8_t is_reverse = 0;      // s일 때 1
+static float base_duty = 0.0f;               // 현재 기본 듀티
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_USART3_UART_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_USART2_UART_Init(void);
+void PWM_SetDuty_TIM2_CH2(float duty_percent);
+void PWM_SetDuty_TIM2_CH1(float duty_percent);
+
+static inline uint8_t imu_checksum_ok(const uint8_t *f);
+static void imu_parse_frame(const uint8_t *f);
+static inline float clampf(float v, float lo, float hi);
+static inline void MOTOR_SPEED_DUTY_LR(float duty1, float duty2);
+static void AdjustMotorsByYaw50ms(void);
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+static inline void MOTOR_START_ALL(void)
+{
+    // OpenDrain: RESET(LOW) = active, SET(HIGH) = Hi-Z(풀업)
+    HAL_GPIO_WritePin(M1_START_GPIO, M1_START_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(M2_START_GPIO, M2_START_PIN, GPIO_PIN_RESET);
+}
+
+static inline void MOTOR_START_RIGHT(void)
+{
+    // OpenDrain: RESET(LOW) = active, SET(HIGH) = Hi-Z(풀업)
+    HAL_GPIO_WritePin(M1_START_GPIO, M1_START_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(M2_START_GPIO, M2_START_PIN, GPIO_PIN_RESET);
+}
+
+
+static inline void MOTOR_START_LEFT(void)
+{
+    // OpenDrain: RESET(LOW) = active, SET(HIGH) = Hi-Z(풀업)
+    HAL_GPIO_WritePin(M1_START_GPIO, M1_START_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(M2_START_GPIO, M2_START_PIN, GPIO_PIN_SET);
+}
+
+static inline void MOTOR_STOP_ALL(void)
+{
+    HAL_GPIO_WritePin(M1_START_GPIO, M1_START_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(M2_START_GPIO, M2_START_PIN, GPIO_PIN_SET);
+}
+
+static inline void MOTOR_DIR_FWD_ALL(void)
+{
+    // PB4/PB5 LOW=FWD 가정 (필요하면 반대로 바꿔)
+    HAL_GPIO_WritePin(M1_DIR_GPIO, M1_DIR_PIN, GPIO_PIN_RESET);		//정회전(좌)
+    HAL_GPIO_WritePin(M2_DIR_GPIO, M2_DIR_PIN, GPIO_PIN_SET);		//정회전(우)
+}
+
+static inline void MOTOR_DIR_RIGHT(void)
+{
+    // PB4/PB5 LOW=FWD 가정 (필요하면 반대로 바꿔)
+    HAL_GPIO_WritePin(M1_DIR_GPIO, M1_DIR_PIN, GPIO_PIN_RESET);		//정회전(좌)
+    HAL_GPIO_WritePin(M2_DIR_GPIO, M2_DIR_PIN, GPIO_PIN_RESET);		//역회전(우)
+}
+
+static inline void MOTOR_DIR_LEFT(void)
+{
+    // PB4/PB5 LOW=FWD 가정 (필요하면 반대로 바꿔)
+    HAL_GPIO_WritePin(M1_DIR_GPIO, M1_DIR_PIN, GPIO_PIN_SET);		//역회전(좌)
+    HAL_GPIO_WritePin(M2_DIR_GPIO, M2_DIR_PIN, GPIO_PIN_SET);		//정회전(우)
+}
+
+static inline void MOTOR_DIR_REV_ALL(void)
+{
+    HAL_GPIO_WritePin(M1_DIR_GPIO, M1_DIR_PIN, GPIO_PIN_SET);		//역회전(좌)
+    HAL_GPIO_WritePin(M2_DIR_GPIO, M2_DIR_PIN, GPIO_PIN_RESET);		//역회전(우)
+}
+
+static inline void M1_DIR_FWD(void){ HAL_GPIO_WritePin(M1_DIR_GPIO, M1_DIR_PIN, GPIO_PIN_RESET); }
+static inline void M1_DIR_REV(void){ HAL_GPIO_WritePin(M1_DIR_GPIO, M1_DIR_PIN, GPIO_PIN_SET);   }
+
+static inline void M2_DIR_FWD(void){ HAL_GPIO_WritePin(M2_DIR_GPIO, M2_DIR_PIN, GPIO_PIN_SET);   }
+static inline void M2_DIR_REV(void){ HAL_GPIO_WritePin(M2_DIR_GPIO, M2_DIR_PIN, GPIO_PIN_RESET); }
+
+static inline void MOTOR_SPEED_STOP_ALL(void)
+{
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0); // M1 PWM
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0); // M2 PWM
+}
+
+// 너가 경험했던 “반전” 유지 (필요없으면 out=duty로 바꾸면 됨)
+static inline void MOTOR_SPEED_DUTY_ALL(float duty)
+{
+    if (duty < 0.0f) duty = 0.0f;
+    if (duty > 100.0f) duty = 100.0f;
+
+    float out = 100.0f - duty;   // ✅ 반전 보정(유지)
+
+    PWM_SetDuty_TIM2_CH2(out);   // Motor1
+    PWM_SetDuty_TIM2_CH1(out);   // Motor2
+}
+
+static void Encoder_All_Start(void)
+{
+    HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); // ENC1 (TIM4)
+    HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL); // ENC2 (TIM3)
+
+    enc1_prev = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+    enc2_prev = (int32_t)__HAL_TIM_GET_COUNTER(&htim3);
+}
+
+static int16_t Encoder1_ReadDelta(void)
+{
+    int32_t now = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+    int16_t d = (int16_t)(now - enc1_prev);
+    enc1_prev = now;
+    return (int16_t)(ENC1_SIGN * d);
+}
+
+static int16_t Encoder2_ReadDelta(void)
+{
+    int32_t now = (int32_t)__HAL_TIM_GET_COUNTER(&htim3);
+    int16_t d = (int16_t)(now - enc2_prev);
+    enc2_prev = now;
+    return (int16_t)(ENC2_SIGN * d);
+}
+
+static inline uint8_t imu_checksum_ok(const uint8_t *f)
+{
+    uint8_t sum = 0;
+    for (int i = 0; i < 10; i++) sum += f[i];
+    return (sum == f[10]);
+}
+
+/* 0x55 0x52(gyro), 0x55 0x53(angle) 프레임 파싱 */
+static void imu_parse_frame(const uint8_t *f)
+{
+    if (!imu_checksum_ok(f)) return;
+
+    if (f[1] == 0x52) { // gyro
+        int16_t gz_raw = (int16_t)((f[7] << 8) | f[6]); // little-endian
+        // 보통 ±2000 dps: raw/32768*2000
+        imu_gz_dps = (float)gz_raw * 2000.0f / 32768.0f;
+    }
+    else if (f[1] == 0x53) { // angle
+        int16_t yaw_raw = (int16_t)((f[7] << 8) | f[6]);
+        float yaw = (float)yaw_raw * 180.0f / 32768.0f;  // [-180,180] 근처
+
+        if (!imu_yaw0_set) { imu_yaw0_deg = yaw; imu_yaw0_set = 1; }
+        imu_yaw_deg = yaw - imu_yaw0_deg;   // 상대 yaw (원하면 그냥 yaw로 바꿔도 됨)
+    }
+}
+
+static inline float clampf(float v, float lo, float hi){
+  if(v<lo) return lo;
+  if(v>hi) return hi;
+  return v;
+}
+
+// duty1: Motor1(TIM2_CH2), duty2: Motor2(TIM2_CH1)
+static inline void MOTOR_SPEED_DUTY_LR(float duty1, float duty2)
+{
+    duty1 = clampf(duty1, 0.0f, 100.0f);
+    duty2 = clampf(duty2, 0.0f, 100.0f);
+
+    if (duty1 <= 0.0f) {
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);  // ✅ 진짜 OFF
+    } else {
+        PWM_SetDuty_TIM2_CH2(100.0f - duty1);             // ✅ 인버팅 보정
+    }
+
+    if (duty2 <= 0.0f) {
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);  // ✅ 진짜 OFF
+    } else {
+        PWM_SetDuty_TIM2_CH1(100.0f - duty2);
+    }
+}
+
+
+
+static void AdjustMotorsByYaw50ms(void)
+{
+    if(!straight_active || !yaw_ref_set) return;
+
+    float err = yaw_ref - imu_yaw_deg ;
+
+    if (err > 180.0f) err -= 360.0f;
+    if (err < -180.0f) err += 360.0f;
+
+    if (fabsf(err) < YAW_DEADBAND_DEG) err = 0.0f;
+
+    float corr = Kp_YAW * err;
+    corr = clampf(corr, -CORR_MAX, +CORR_MAX);
+
+    if(is_reverse) corr = -corr;
+
+    float dutyL = base_duty - corr;
+    float dutyR = base_duty + corr;
+
+    MOTOR_SPEED_DUTY_LR(dutyL, dutyR);
+}
+
+
+/*
+static void AdjustMotorsByYaw50ms(void)
+{
+    if(!straight_active || !yaw_ref_set) return;
+
+    // 상대 yaw를 쓰고 있으니 wrap 한 번 더 안전하게
+    float yaw = imu_yaw_deg;
+    //float gz  = imu_gz_dps  * GZ_SIGN;
+
+    float err = yaw - yaw_ref;
+    if (err > 180.0f) err -= 360.0f;
+    if (err < -180.0f) err += 360.0f;
+
+    // deadband
+    if (fabsf(err) < YAW_DEADBAND_DEG) err = 0.0f;
+
+    // 간단 LPF
+    static float err_f=0.0f, gz_f=0.0f;
+    const float a=0.25f; // err filter
+    const float b=0.25f; // gz filter
+    err_f += a*(err - err_f);
+    gz_f  += b*(gz  - gz_f);
+
+    // PD 보정(% duty)
+    float corr = Kp_YAW*err_f;
+    //float corr = Kp_YAW*err_f + Kd_GZ*(-gz_f);
+
+    // 후진 감각 통일(필요 없으면 주석)
+    if(is_reverse) corr = -corr;
+
+    // clamp
+    corr = clampf(corr, -CORR_MAX, +CORR_MAX);
+
+    // slew limit
+    static float corr_prev=0.0f;
+    float dc = corr - corr_prev;
+    if(dc >  CORR_SLEW) corr = corr_prev + CORR_SLEW;
+    if(dc < -CORR_SLEW) corr = corr_prev - CORR_SLEW;
+    corr_prev = corr;
+
+    // 좌/우 듀티 적용
+    // err>0이면 어느쪽을 올/내릴지는 “네 로봇 yaw 방향”에 따라 달라질 수 있음.
+    // 아래는 가장 일반적인 형태: left += corr, right -= corr
+    float dutyL = base_duty + corr;
+    float dutyR = base_duty - corr;
+
+    MOTOR_SPEED_DUTY_LR(dutyL, dutyR);
+}
+*/
+
+static inline int16_t clamp_cmd_signed(int v)
+{
+    if (v == 0) return 0;
+
+    if (v > 0) {
+        if (v < 3)  v = 3;
+        if (v > 50) v = 50;
+        return (int16_t)v;
+    } else { // v < 0
+        // -1 ~ -4 를 -5로
+        if (v > -3)  v = -3;
+        if (v < -50) v = -50;
+        return (int16_t)v;
+    }
+}
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_TIM2_Init();
+  MX_USART3_UART_Init();
+  MX_TIM4_Init();
+  MX_TIM3_Init();
+  MX_USART2_UART_Init();
+  /* USER CODE BEGIN 2 */
+
+  ////* MOTOR Setting STRAT*////
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+  MOTOR_SPEED_STOP_ALL();
+  MOTOR_STOP_ALL();
+  HAL_Delay(200);
+  ////* MOTOR Setting END*////
+
+  HAL_UART_Receive_IT(&huart3, &rx3, 1);
+  HAL_UART_Receive_IT(&huart2, &imu_rx, 1);
+
+  Encoder_All_Start();
+  last_upd_ms  = HAL_GetTick();
+  last_send_ms = last_upd_ms;
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+	  uint32_t now_ms = HAL_GetTick();
+
+	  if (speed_updated)
+	  {
+	      speed_updated = 0;
+
+	      int16_t L = cmd_duty_L;
+	      int16_t R = cmd_duty_R;
+
+	      // (1) 둘 다 0이면 정지: START 먼저 끄는 순서 OK
+	      if (L == 0 && R == 0)
+	      {
+	          MOTOR_STOP_ALL();
+	          HAL_Delay(20);
+	          MOTOR_SPEED_STOP_ALL();
+
+	          straight_active = 0;
+	          yaw_ref_set = 0;
+	      }
+	      // 직진일때
+	      else if(L == R && L != 0){
+	    	    if (L > 0) {
+	    	        M1_DIR_FWD();
+	    	        M2_DIR_FWD();
+	    	        is_reverse = 0;
+	    	    } else {
+	    	        M1_DIR_REV();
+	    	        M2_DIR_REV();
+	    	        is_reverse = 1;
+	    	    }
+
+	    	    MOTOR_START_ALL();
+
+	    	    base_duty = (float)((L > 0) ? L : -L);
+
+	    	    if(!yaw_ref_set){
+		    	    yaw_ref = imu_yaw_deg;
+		    	    yaw_ref_set = 1;
+	    	    }
+
+	    	    straight_active = 1;
+
+	    	    //MOTOR_SPEED_DUTY_LR(base_duty, base_duty);
+	      }
+	      // 회전할때
+	      else
+	      {
+	          straight_active = 0;
+	          yaw_ref_set = 0;
+
+	          // (2) 방향 설정: 부호로 DIR 결정 (PWM은 abs로)
+	          if (L >= 0) M1_DIR_FWD(); else M1_DIR_REV();
+	          if (R >= 0) M2_DIR_FWD(); else M2_DIR_REV();
+
+	          // (3) enable(start) 제어
+	          if (L == 0 && R != 0) {
+	              MOTOR_START_RIGHT();   // 오른쪽만 enable
+	          } else if (R == 0 && L != 0) {
+	              MOTOR_START_LEFT();    // 왼쪽만 enable
+	          } else {
+	              MOTOR_START_ALL();     // 둘 다 enable
+	          }
+
+	          // (4) PWM은 절댓값으로
+	          float dutyL = (float)((L >= 0) ? L : -L);
+	          float dutyR = (float)((R >= 0) ? R : -R);
+
+	          MOTOR_SPEED_DUTY_LR(dutyL, dutyR);
+	      }
+
+	      // yaw 보정 안 쓰면 그대로 OFF
+	      //straight_active = 0;
+	      //yaw_ref_set = 0;
+	  }
+
+
+
+
+	  /* (1) 엔코더 raw 누적: 1~5ms 주기로 자주 */
+	  if (now_ms - last_upd_ms >= ENC_UPD_MS)
+	  {
+	      last_upd_ms = now_ms;
+
+	      acc1_raw += (int32_t)Encoder1_ReadDelta();
+	      acc2_raw += (int32_t)Encoder2_ReadDelta();
+	  }
+
+	  /* (2) UART로는 50ms마다만 전송 */
+	  if (now_ms - last_send_ms >= ENC_SEND_MS)
+	  {
+	      last_send_ms = now_ms;
+	      AdjustMotorsByYaw50ms();
+
+	      int32_t p1 = (acc1_raw >> ENC_SHIFT);
+	      int32_t p2 = (acc2_raw >> ENC_SHIFT);
+
+	      //int32_t c3 = (int32_t)__HAL_TIM_GET_COUNTER(&htim3);
+	      //int32_t c4 = (int32_t)__HAL_TIM_GET_COUNTER(&htim4);
+
+	      char buf[160];
+
+
+	      int n = snprintf(buf, sizeof(buf),
+	                       "%ld, %ld, %.2f, %.2f\r\n",
+	                       (long)p1, (long)p2,
+	                       (double)imu_yaw_deg, (double)imu_gz_dps);
+
+
+
+	      HAL_UART_Transmit(&huart3, (uint8_t*)buf, n, 50);
+	  }
+
+
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 180;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Activate the Over-Drive mode
+  */
+  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 89;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 99;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 4;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 4;
+  if (HAL_TIM_Encoder_Init(&htim3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 65535;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 4;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 4;
+  if (HAL_TIM_Encoder_Init(&htim4, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_SET);
+
+  /*Configure GPIO pins : PA4 PA5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB4 PB5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if (huart->Instance == USART3)
+	{
+	    char c = (char)rx3;
+
+	    if (c == '\r') {
+	        // 무시(윈도우 CRLF 대비)
+	    }
+	    else if (c == '\n') {
+	        // 한 줄 끝
+	        rx3_line[rx3_idx] = '\0';
+	        rx3_idx = 0;
+
+	        // "L R" 또는 "L,R" 둘 다 허용하고 싶으면 콤마를 공백으로 바꿔줌
+	        for (int i = 0; rx3_line[i]; i++) {
+	            if (rx3_line[i] == ',') rx3_line[i] = ' ';
+	        }
+
+	        int l, r;
+            if (sscanf(rx3_line, "%d %d", &l, &r) == 2) {
+                cmd_duty_L = clamp_cmd_signed(l);
+                cmd_duty_R = clamp_cmd_signed(r);
+                speed_updated = 1;
+            }
+	        // 파싱 실패하면 그냥 무시
+	    }
+	    else {
+	        // 버퍼에 쌓기
+	        if (rx3_idx < RX3_LINE_MAX - 1) {
+	            rx3_line[rx3_idx++] = c;
+	        } else {
+	            // overflow -> 리셋
+	            rx3_idx = 0;
+	        }
+	    }
+
+	    HAL_UART_Receive_IT(&huart3, &rx3, 1);
+	}
+
+    else if (huart->Instance == USART2)
+    {
+        uint8_t b = imu_rx;
+
+        if (!imu_sync)
+        {
+            if (b == 0x55) {
+                imu_sync = 1;
+                imu_idx = 0;
+                imu_buf[imu_idx++] = b;
+            }
+        }
+        else
+        {
+            imu_buf[imu_idx++] = b;
+
+            if (imu_idx >= IMU_FRAME_LEN)
+            {
+                imu_parse_frame(imu_buf);
+                imu_sync = 0;
+                imu_idx = 0;
+            }
+        }
+
+        // ✅ 이 줄이 없으면 IMU는 “1바이트 받고 끝”
+        HAL_UART_Receive_IT(&huart2, &imu_rx, 1);
+    }
+}
+
+
+
+
+void PWM_SetDuty_TIM2_CH2(float duty_percent)
+{
+    if (duty_percent < 0.0f) duty_percent = 0.0f;
+    if (duty_percent > 100.0f) duty_percent = 100.0f;
+
+    uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim2);
+    uint32_t ccr = (uint32_t)((duty_percent / 100.0f) * (arr + 1));
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, ccr);
+}
+
+void PWM_SetDuty_TIM2_CH1(float duty_percent)
+{
+    if (duty_percent < 0.0f) duty_percent = 0.0f;
+    if (duty_percent > 100.0f) duty_percent = 100.0f;
+
+    uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim2);
+    uint32_t ccr = (uint32_t)((duty_percent / 100.0f) * (arr + 1));
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, ccr);
+}
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
